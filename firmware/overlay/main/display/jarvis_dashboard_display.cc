@@ -36,12 +36,16 @@ constexpr uint32_t kColorSky = 0x38BDF8;        // clima
 
 constexpr int kClockTickPeriodMicroseconds = 10 * 1000 * 1000;
 
-// Anchos del reparto aprobado, en pixeles del panel de 800.
+// Anchos del reparto aprobado, en pixeles del panel de 800. En otros anchos se
+// escalan (ScaledWidth); la columna de la mascota se queda con el resto.
 constexpr int kAgendaColumnWidth = 262;
 constexpr int kPendingColumnWidth = 288;
+constexpr int kDesignWidth = 800;
 constexpr int kGap = 9;
 constexpr int kOuterPad = 10;
 constexpr int kStatusBarHeight = 34;
+// Botones Hablar y Enviar: a la altura de un dedo, no de un cursor.
+constexpr int kTalkButtonHeight = 64;
 
 // Einstein: 150x163, convertido de PicoPixel. Las duraciones son las del propio
 // sprite, no inventadas — ver deploy/esp32/assets/einstein/modes.json.
@@ -72,6 +76,11 @@ constexpr uint32_t kGestureMaxGapMs = 60 * 1000;
 constexpr uint32_t kWalkMinGapMs = 4 * 60 * 1000;
 constexpr uint32_t kWalkMaxGapMs = 8 * 60 * 1000;
 constexpr uint32_t kWalkLegMs = 1800;
+
+// Ancho del diseño de 800 px llevado al panel real (1024 en la P4-7B).
+int ScaledWidth(int design_px) {
+    return design_px * LV_HOR_RES / kDesignWidth;
+}
 
 void SetPetTranslateX(void* object, int32_t value) {
     lv_obj_set_style_translate_x(static_cast<lv_obj_t*>(object), value, 0);
@@ -114,7 +123,7 @@ JarvisDashboardDisplay::JarvisDashboardDisplay(esp_lcd_panel_io_handle_t panel_i
                                                esp_lcd_panel_handle_t panel, int width,
                                                int height, int offset_x, int offset_y,
                                                bool mirror_x, bool mirror_y, bool swap_xy)
-    : RgbLcdDisplay(panel_io, panel, width, height, offset_x, offset_y, mirror_x, mirror_y,
+    : JarvisDashboardBase(panel_io, panel, width, height, offset_x, offset_y, mirror_x, mirror_y,
                     swap_xy),
       accent_color_(lv_color_hex(kColorTurquoise)) {}
 
@@ -226,7 +235,7 @@ void JarvisDashboardDisplay::BuildAgendaColumn(lv_obj_t* parent) {
     auto text_font = SafeFont(lvgl_theme->text_font());
 
     lv_obj_t* column = lv_obj_create(parent);
-    lv_obj_set_size(column, kAgendaColumnWidth, LV_PCT(100));
+    lv_obj_set_size(column, ScaledWidth(kAgendaColumnWidth), LV_PCT(100));
     lv_obj_set_style_bg_opa(column, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(column, 0, 0);
     lv_obj_set_style_pad_all(column, 0, 0);
@@ -296,7 +305,7 @@ void JarvisDashboardDisplay::BuildPendingColumn(lv_obj_t* parent) {
     auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
 
     lv_obj_t* column = lv_obj_create(parent);
-    lv_obj_set_size(column, kPendingColumnWidth, LV_PCT(100));
+    lv_obj_set_size(column, ScaledWidth(kPendingColumnWidth), LV_PCT(100));
     lv_obj_set_style_bg_opa(column, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(column, 0, 0);
     lv_obj_set_style_pad_all(column, 0, 0);
@@ -395,6 +404,10 @@ void JarvisDashboardDisplay::BuildPetColumn(lv_obj_t* parent) {
     lv_obj_set_style_text_align(pet_say_label_, LV_TEXT_ALIGN_CENTER, 0);
     StyleTileText(pet_say_label_, kColorInk);
 
+#ifdef CONFIG_JARVIS_SCREEN_TALK_BUTTONS
+    BuildTalkButtons(column);
+#endif
+
     lv_obj_t* travel = MakeTile(column, lv_color_hex(kColorGreen), nullptr);
     travel_head_label_ = lv_label_create(travel);
     lv_label_set_text(travel_head_label_, "");
@@ -403,6 +416,88 @@ void JarvisDashboardDisplay::BuildPetColumn(lv_obj_t* parent) {
     lv_label_set_text(travel_value_label_, "");
     StyleTileText(travel_value_label_, kColorInk);
     lv_obj_add_flag(travel, LV_OBJ_FLAG_HIDDEN);
+}
+
+lv_obj_t* JarvisDashboardDisplay::MakeTalkButton(lv_obj_t* parent, uint32_t accent,
+                                                 const char* text, lv_obj_t** label_out) {
+    lv_obj_t* button = lv_obj_create(parent);
+    lv_obj_set_height(button, LV_PCT(100));
+    lv_obj_set_flex_grow(button, 1);
+    lv_obj_set_style_bg_color(button, lv_color_hex(kColorTile), 0);
+    lv_obj_set_style_border_color(button, lv_color_hex(accent), 0);
+    lv_obj_set_style_border_width(button, 2, 0);
+    lv_obj_set_style_radius(button, 12, 0);
+    lv_obj_set_style_pad_all(button, 0, 0);
+    lv_obj_set_scrollbar_mode(button, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(button, LV_OBJ_FLAG_SCROLLABLE);
+
+    // La fuente se hereda, como en todo el tablero (ver StyleTileText).
+    lv_obj_t* label = lv_label_create(button);
+    lv_label_set_text(label, text);
+    StyleTileText(label, accent);
+    lv_obj_center(label);
+    *label_out = label;
+    return button;
+}
+
+void JarvisDashboardDisplay::BuildTalkButtons(lv_obj_t* parent) {
+    lv_obj_t* row = lv_obj_create(parent);
+    lv_obj_set_size(row, LV_PCT(100), kTalkButtonHeight);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_style_pad_column(row, kGap, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_scrollbar_mode(row, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    talk_button_ = MakeTalkButton(row, kColorTurquoise, "Hablar", &talk_button_label_);
+    send_button_ = MakeTalkButton(row, kColorTangerine, "Enviar", &send_button_label_);
+    // Arranca en reposo: Enviar apagado hasta que haya algo que enviar.
+    lv_obj_set_style_opa(send_button_, LV_OPA_40, 0);
+}
+
+JarvisDashboardDisplay::TalkButton JarvisDashboardDisplay::HitTestTalkButtons(int x, int y) {
+    DisplayLockGuard lock(this);
+    // Un recordatorio a pantalla completa tapa los botones y se lleva el toque.
+    if (reminder_overlay_ != nullptr && !lv_obj_has_flag(reminder_overlay_, LV_OBJ_FLAG_HIDDEN)) {
+        return TalkButton::kNone;
+    }
+    auto is_inside = [x, y](lv_obj_t* object) {
+        if (object == nullptr) {
+            return false;
+        }
+        lv_area_t area;
+        lv_obj_get_coords(object, &area);
+        return x >= area.x1 && x <= area.x2 && y >= area.y1 && y <= area.y2;
+    };
+    if (is_inside(talk_button_)) {
+        return TalkButton::kTalk;
+    }
+    if (is_inside(send_button_)) {
+        return TalkButton::kSend;
+    }
+    return TalkButton::kNone;
+}
+
+void JarvisDashboardDisplay::SetTalkButtonsListening(bool listening) {
+    DisplayLockGuard lock(this);
+    if (talk_button_ == nullptr || listening == talk_buttons_listening_) {
+        return;
+    }
+    talk_buttons_listening_ = listening;
+    if (listening) {
+        // Hablar encendido: el microfono esta abierto y otro toque da mas tiempo.
+        lv_obj_set_style_bg_color(talk_button_, lv_color_hex(kColorTurquoise), 0);
+        lv_obj_set_style_text_color(talk_button_label_, lv_color_hex(kColorScreen), 0);
+        lv_label_set_text(talk_button_label_, "+ tiempo");
+        lv_obj_set_style_opa(send_button_, LV_OPA_COVER, 0);
+    } else {
+        lv_obj_set_style_bg_color(talk_button_, lv_color_hex(kColorTile), 0);
+        lv_obj_set_style_text_color(talk_button_label_, lv_color_hex(kColorTurquoise), 0);
+        lv_label_set_text(talk_button_label_, "Hablar");
+        lv_obj_set_style_opa(send_button_, LV_OPA_40, 0);
+    }
 }
 
 void JarvisDashboardDisplay::RefreshClockLabel() {
@@ -718,7 +813,7 @@ void JarvisDashboardDisplay::TickIdleLife() {
 }
 
 void JarvisDashboardDisplay::SetPowerSaveMode(bool on) {
-    RgbLcdDisplay::SetPowerSaveMode(on);
+    JarvisDashboardBase::SetPowerSaveMode(on);
     DisplayLockGuard lock(this);
     asleep_ = on;
     if (pet_anim_ == nullptr) {

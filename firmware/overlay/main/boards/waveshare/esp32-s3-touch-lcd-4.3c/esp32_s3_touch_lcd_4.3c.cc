@@ -10,6 +10,7 @@
 #include "codecs/box_audio_codec.h"
 #include "application.h"
 #include "button.h"
+#include "jarvis_touch_gestures.h"
 #include "mcp_server.h"
 #include "config.h"
 #include "power_save_timer.h"
@@ -55,19 +56,8 @@ private:
     PowerSaveTimer* power_save_timer_;
     CustomBacklight *backlight_;
 
-    // El touch se consulta directo desde una tarea propia, en los dos caminos:
-    // los gestos necesitan el trazo crudo del dedo, y es lo unico que despierta
-    // la pantalla dormida (SendGesture -> NoteUserActivity).
-    esp_lcd_touch_handle_t touch_handle_ = nullptr;
-    static constexpr int kTapMaxTravelPx = 30;
-    static constexpr int kSwipeMinTravelPx = 60;
-    static constexpr uint32_t kTapMaxMs = 400;
-    static constexpr uint32_t kDoubleTapWindowMs = 400;
-    // Apenas por encima de kTapMaxMs: una pulsación recién pasa a ser
-    // push-to-talk cuando ya es demasiado larga para ser un tap.
-    static constexpr uint32_t kHoldToTalkMs = 450;
-    static constexpr uint32_t kTouchPollMs = 20;
-    static constexpr int kMaxTouchReadFailures = 25;
+    // Los gestos del táctil (incluidos los botones Hablar y Enviar) viven en
+    // boards/common/jarvis_touch_gestures.h, compartidos con la placa P4-7B.
 
     void InitializePowerSaveTimer() {
         power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
@@ -240,132 +230,8 @@ private:
         // El tablero no tiene widgets que se toquen, así que NO se registra el
         // touch en LVGL: dos tareas leyendo el mismo GT911 por I2C es pelearse
         // por el bus para nada.
-        touch_handle_ = tp;
-        xTaskCreate([](void* arg) { static_cast<WaveshareEsp32s3TouchLCD43c*>(arg)->TouchGestureTask(); },
-                    "touch_gesture", 4096, this, 4, nullptr);
+        JarvisTouchGestures::Start(tp, display_);
         ESP_LOGI(TAG, "Touch panel initialized successfully");
-    }
-
-    // Portado del board 1.85C de Apollo. Aquel usa CST816S; este GT911. Las
-    // lecturas van por la API genérica esp_lcd_touch, así que el único cambio
-    // real es que el GT911 no tiene el auto-sleep del CST816S: no hace falta
-    // re-armarlo, y un controlador mudo es un fallo de verdad.
-    void TouchGestureTask() {
-        bool was_pressed = false;
-        int consecutive_read_failures = 0;
-        int start_x = 0, start_y = 0, last_x = 0, last_y = 0;
-        uint32_t press_started_ms = 0;
-        uint32_t pending_tap_ms = 0;  // 0 = no hay tap esperando su ventana
-        bool is_hold_talking = false;
-
-        while (true) {
-            uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-
-            uint16_t x = 0, y = 0;
-            uint8_t point_count = 0;
-            if (esp_lcd_touch_read_data(touch_handle_) != ESP_OK) {
-                // Un controlador que nunca contesta loguearía un error por
-                // sondeo, para siempre. Mejor rendirse que ahogar el log.
-                if (++consecutive_read_failures >= kMaxTouchReadFailures) {
-                    ESP_LOGE(TAG, "Touch controller unresponsive, stopping gesture task");
-                    vTaskDelete(nullptr);
-                    return;
-                }
-                vTaskDelay(pdMS_TO_TICKS(kTouchPollMs));
-                continue;
-            }
-            consecutive_read_failures = 0;
-            bool is_pressed =
-                esp_lcd_touch_get_coordinates(touch_handle_, &x, &y, nullptr, &point_count, 1) &&
-                point_count > 0;
-
-            // Una pantalla de confirmación se adueña del touch: al soltar se
-            // resuelve el botón en el acto (esperar la ventana de doble tap los
-            // haría sentir rotos) y una pulsación ya no puede volverse
-            // push-to-talk. Un hold que empezó antes termina por el camino normal.
-            if (Application::GetInstance().IsConfirmActive() && !is_hold_talking) {
-                pending_tap_ms = 0;
-                if (is_pressed && !was_pressed) {
-                    start_x = last_x = x;
-                    start_y = last_y = y;
-                    press_started_ms = now_ms;
-                } else if (is_pressed) {
-                    last_x = x;
-                    last_y = y;
-                } else if (was_pressed) {
-                    ESP_LOGI(TAG, "Confirm release at (%d,%d)", last_x, last_y);
-                    Application::GetInstance().OnConfirmTouchRelease(last_x, last_y);
-                }
-                was_pressed = is_pressed;
-                vTaskDelay(pdMS_TO_TICKS(kTouchPollMs));
-                continue;
-            }
-
-            if (is_pressed && !was_pressed) {
-                start_x = last_x = x;
-                start_y = last_y = y;
-                press_started_ms = now_ms;
-            } else if (is_pressed) {
-                last_x = x;
-                last_y = y;
-                // Mantener apretado para hablar: graba cuando la pulsación ya es
-                // muy larga para ser un tap, y sigue hasta que se levanta el
-                // dedo. El dedo tiene que quedarse quieto, o esto secuestraría
-                // un swipe lento.
-                if (!is_hold_talking && now_ms - press_started_ms >= kHoldToTalkMs &&
-                    abs(last_x - start_x) < kTapMaxTravelPx &&
-                    abs(last_y - start_y) < kTapMaxTravelPx) {
-                    is_hold_talking = true;
-                    pending_tap_ms = 0;
-                    auto& app = Application::GetInstance();
-                    // Un hold sobre la pantalla apagada debería encenderla Y
-                    // grabar, no solo encenderla.
-                    app.NoteUserActivity();
-                    app.StartListening();
-                }
-            } else if (was_pressed) {
-                if (is_hold_talking) {
-                    // Levantar el dedo es lo que envía el turno.
-                    is_hold_talking = false;
-                    Application::GetInstance().StopListening();
-                    was_pressed = is_pressed;
-                    vTaskDelay(pdMS_TO_TICKS(kTouchPollMs));
-                    continue;
-                }
-
-                int dx = last_x - start_x;
-                int dy = last_y - start_y;
-                uint32_t held_ms = now_ms - press_started_ms;
-
-                if (abs(dx) >= kSwipeMinTravelPx && abs(dx) > abs(dy)) {
-                    pending_tap_ms = 0;
-                    EmitGesture(dx > 0 ? "swipe_right" : "swipe_left");
-                } else if (held_ms <= kTapMaxMs && abs(dx) < kTapMaxTravelPx &&
-                           abs(dy) < kTapMaxTravelPx) {
-                    if (pending_tap_ms != 0) {
-                        pending_tap_ms = 0;
-                        EmitGesture("double_tap");
-                    } else {
-                        // El tap simple se retiene: recién es un tap cuando la
-                        // ventana de doble tap se cierra sin una segunda pulsación.
-                        pending_tap_ms = now_ms;
-                    }
-                }
-            }
-
-            if (pending_tap_ms != 0 && now_ms - pending_tap_ms > kDoubleTapWindowMs) {
-                pending_tap_ms = 0;
-                EmitGesture("tap");
-            }
-
-            was_pressed = is_pressed;
-            vTaskDelay(pdMS_TO_TICKS(kTouchPollMs));
-        }
-    }
-
-    void EmitGesture(const char* gesture) {
-        ESP_LOGI(TAG, "Touch gesture: %s", gesture);
-        Application::GetInstance().SendGesture(gesture);
     }
 
     // Initialization tool

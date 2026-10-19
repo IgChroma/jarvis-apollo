@@ -65,6 +65,54 @@ config APOLLO_RAW_PCM_UPLINK
         the send queue. Costs far more bandwidth, but means the server needs no
         Opus decoder, which matters when it runs somewhere without one.
 
+# Jarvis 2026-10-18: cuándo se abre el micrófono.
+config JARVIS_ALWAYS_LISTEN
+    bool "Escucha permanente con la palabra de activación"
+    default n
+    help
+        Con esto en "y", la placa escucha todo el tiempo esperando la palabra
+        de activación ("Hey Jarvis"), como antes.
+
+        En "n" (default) el modelo de la palabra se sigue compilando pero
+        nunca se activa: el micrófono queda APAGADO en reposo y solo se abre
+        con un botón (el de la pantalla o JARVIS_TALK_BUTTON_GPIO) o
+        manteniendo apretada la pantalla.
+
+config JARVIS_SCREEN_TALK_BUTTONS
+    bool "Botones Hablar y Enviar en la pantalla"
+    default y
+    help
+        Dibuja dos botones en el tablero. Hablar: un toque abre la ventana de
+        escucha (ver JARVIS_TALK_WINDOW_SECONDS); mantenerlo apretado es
+        push-to-talk. Enviar: corta la escucha y manda lo grabado.
+
+config JARVIS_TALK_BUTTON_GPIO
+    int "GPIO del botón físico Hablar (-1 = sin botón)"
+    range -1 54
+    default -1
+    help
+        Pulsador cableado entre este pin y GND (usa el pull-up interno).
+        Hace lo mismo que el botón Hablar de la pantalla: un toque abre la
+        ventana de escucha y mantenerlo apretado es push-to-talk. Funciona a
+        la vez que el de la pantalla. Elegí un pin libre según el esquemático
+        de tu placa.
+
+config JARVIS_TALK_WINDOW_SECONDS
+    int "Ventana de escucha tras un toque (segundos)"
+    range 5 120
+    default 30
+    help
+        Cuánto espera el micrófono a que empieces a hablar después de un
+        toque en Hablar. Otro toque mientras está abierto la reinicia.
+
+config JARVIS_TALK_WINDOW_SILENCE_MS
+    int "Silencio que cierra la ventana (ms)"
+    range 1000 15000
+    default 5000
+    help
+        Una vez que hablaste, cuánto silencio hace falta para enviar solo.
+        Mientras sigas hablando la ventana se extiende.
+
 config OTA_URL
     string "Default OTA URL"
     default "https://api.tenclass.net/xiaozhi/ota/"
@@ -114,7 +162,7 @@ choice BOARD_TYPE
     prompt "Target Board"
     default BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_1_85C
     help
-        Apollo runs on exactly one board in this fork.
+        Placas que soporta Jarvis: la 4.3C (ESP32-S3) y la P4-7B (ESP32-P4).
 
     config BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_1_85C
         bool "Waveshare ESP32-S3-Touch-LCD-1.85C"
@@ -123,6 +171,10 @@ choice BOARD_TYPE
     config BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_4_3C
         bool "Waveshare ESP32-S3-Touch-LCD-4.3C"
         depends on IDF_TARGET_ESP32S3
+
+    config BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_7B
+        bool "Waveshare ESP32-P4-WIFI6-Touch-LCD-7B"
+        depends on IDF_TARGET_ESP32P4
 endchoice
 
 choice DISPLAY_ESP32S3_TOUCH_LCD_1_85C

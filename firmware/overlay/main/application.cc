@@ -4,6 +4,7 @@
 #include "assets/sound_variants.h"
 #include "audio_codec.h"
 #include "board.h"
+#include "button.h"
 #include "display.h"
 #include "display/confirm_geometry.h"
 #include "mcp_server.h"
@@ -56,6 +57,16 @@ static constexpr int kScreenSleepAfterSeconds = 900;
 static constexpr int kChannelReopenMinSeconds = 5;
 static constexpr int kChannelReopenMaxSeconds = 60;
 static constexpr int kFirmwareHealthySeconds = 60;
+#endif
+
+// Botón Hablar (pantalla y GPIO). El hold arranca recién cuando la pulsación ya
+// es muy larga para ser un toque, igual que en la pantalla.
+static constexpr uint16_t kTalkButtonHoldMs = 450;
+// Tope de una ventana de escucha aunque sigas hablando: el servidor junta todo
+// el audio del turno en memoria antes de transcribir.
+static constexpr int64_t kTalkWindowMaxUs = 3 * 60 * 1000 * 1000LL;
+
+#ifdef CONFIG_APOLLO_PROTOCOL
 // Draining the encoder after the finger lifts: a few short waits rather than one
 // long one, so a quiet tail costs nothing but a real one still gets through.
 static constexpr int kListenFlushAttempts = 6;
@@ -201,6 +212,7 @@ void Application::BuildBootReport() {
             char pc[20];
             snprintf(pc, sizeof(pc), "0x%08lx", (unsigned long)summary->exc_pc);
             cJSON_AddStringToObject(crash, "pc", pc);
+#if CONFIG_IDF_TARGET_ARCH_XTENSA
             std::string backtrace;
             for (uint32_t index = 0; index < summary->exc_bt_info.depth && index < 16; index++) {
                 char frame[12];
@@ -208,6 +220,15 @@ void Application::BuildBootReport() {
                 backtrace += frame;
             }
             cJSON_AddStringToObject(crash, "backtrace", backtrace.c_str());
+#else
+            // RISC-V (ESP32-P4): el resumen no trae backtrace armado, solo un
+            // volcado de pila. La dirección de retorno y la causa alcanzan
+            // para ubicar el cuelgue con addr2line.
+            char frame[40];
+            snprintf(frame, sizeof(frame), "ra=0x%08lx mcause=0x%lx",
+                     (unsigned long)summary->ex_info.ra, (unsigned long)summary->ex_info.mcause);
+            cJSON_AddStringToObject(crash, "backtrace", frame);
+#endif
             cJSON_AddItemToObject(root, "crash", crash);
         }
         free(summary);
@@ -428,6 +449,8 @@ void Application::Initialize() {
                 break;
         }
     });
+
+    InitializeTalkButtonGpio();
 
     // Start network asynchronously
     board.StartNetwork();
@@ -1280,6 +1303,7 @@ void Application::HandleStartListeningEvent() {
     }
 
     if (state == kDeviceStateIdle) {
+        talk_window_active_ = false;
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
             // Schedule to let the state change be processed first (UI update)
@@ -1288,9 +1312,135 @@ void Application::HandleStartListeningEvent() {
         }
         SetListeningMode(kListeningModeManualStop);
     } else if (state == kDeviceStateSpeaking) {
+        talk_window_active_ = false;
         AbortSpeaking(kAbortReasonNone);
         SetListeningMode(kListeningModeManualStop);
     }
+    // Con una ventana ya abierta el hold no cambia nada: el micrófono sigue
+    // abierto y soltar el botón envía (HandleStopListeningEvent).
+}
+
+void Application::TalkButtonTap() {
+    Schedule([this]() { HandleTalkButtonTap(); });
+}
+
+void Application::TalkButtonSend() {
+    Schedule([this]() { HandleTalkButtonSend(); });
+}
+
+void Application::HandleTalkButtonTap() {
+#ifdef CONFIG_APOLLO_PROTOCOL
+    NoteUserActivity();
+#endif
+    if (!protocol_) {
+        return;
+    }
+    const int64_t now = esp_timer_get_time();
+    switch (GetDeviceState()) {
+        case kDeviceStateIdle: {
+            talk_window_active_ = true;
+            talk_window_anchor_us_ = now;
+            ListeningMode mode = GetDefaultListeningMode();
+            if (!protocol_->IsAudioChannelOpened()) {
+                SetDeviceState(kDeviceStateConnecting);
+                // Schedule to let the state change be processed first (UI update)
+                Schedule([this, mode]() { ContinueOpenAudioChannel(mode); });
+                return;
+            }
+            SetListeningMode(mode);
+            return;
+        }
+        case kDeviceStateSpeaking:
+            // Cortar la respuesta para hablar ya: mismo camino que la palabra
+            // de activación durante una respuesta.
+            AbortSpeaking(kAbortReasonNone);
+            while (audio_service_.PopPacketFromSendQueue())
+                ;
+            talk_window_active_ = true;
+            talk_window_anchor_us_ = now;
+            play_popup_on_listening_ = true;
+            SetListeningMode(GetDefaultListeningMode());
+            return;
+        case kDeviceStateListening:
+            // Un hold en curso manda el dedo: el toque no lo pisa.
+            if (listening_mode_ == kListeningModeManualStop) {
+                return;
+            }
+            // Ya escuchando (una ventana, o la reapertura tras una respuesta):
+            // el toque reinicia los plazos.
+            talk_window_active_ = true;
+            talk_window_anchor_us_ = now;
+            ESP_LOGI(TAG, "Talk window restarted");
+            return;
+        default:
+            // Conectando o activando: no hay micrófono que abrir todavía.
+            return;
+    }
+}
+
+void Application::HandleTalkButtonSend() {
+#ifdef CONFIG_APOLLO_PROTOCOL
+    NoteUserActivity();
+#endif
+    if (GetDeviceState() == kDeviceStateListening) {
+        ESP_LOGI(TAG, "Send button, committing the turn");
+        HandleStopListeningEvent();
+    }
+}
+
+void Application::InitializeTalkButtonGpio() {
+#if CONFIG_JARVIS_TALK_BUTTON_GPIO >= 0
+    const gpio_num_t gpio = static_cast<gpio_num_t>(CONFIG_JARVIS_TALK_BUTTON_GPIO);
+    if (!GPIO_IS_VALID_GPIO(gpio)) {
+        ESP_LOGE(TAG, "JARVIS_TALK_BUTTON_GPIO=%d is not a valid GPIO on this chip",
+                 CONFIG_JARVIS_TALK_BUTTON_GPIO);
+        return;
+    }
+    // Activo en bajo: el pulsador va entre el pin y GND, con el pull-up interno.
+    talk_button_ = new Button(gpio, false, kTalkButtonHoldMs);
+    talk_button_->OnPressDown([this]() { talk_button_long_pressed_.store(false); });
+    talk_button_->OnLongPress([this]() {
+        talk_button_long_pressed_.store(true);
+        talk_button_holding_.store(true);
+#ifdef CONFIG_APOLLO_PROTOCOL
+        NoteUserActivity();
+#endif
+        StartListening();
+    });
+    talk_button_->OnPressUp([this]() {
+        if (talk_button_holding_.exchange(false)) {
+            StopListening();
+        }
+    });
+    talk_button_->OnClick([this]() {
+        if (!talk_button_long_pressed_.load()) {
+            TalkButtonTap();
+        }
+    });
+    ESP_LOGI(TAG, "Talk button on GPIO %d", CONFIG_JARVIS_TALK_BUTTON_GPIO);
+#endif
+}
+
+void Application::EnableWakeWordIfAllowed(bool enable) {
+#ifdef CONFIG_JARVIS_ALWAYS_LISTEN
+    audio_service_.EnableWakeWordDetection(enable);
+#else
+    // El modelo sigue cargado pero nunca corre: en reposo el micrófono queda
+    // apagado (AudioService cierra la entrada del codec cuando nadie la usa).
+    (void)enable;
+    audio_service_.EnableWakeWordDetection(false);
+#endif
+}
+
+void Application::UpdateScreenTalkButtons(bool listening) {
+#ifdef CONFIG_JARVIS_SCREEN_TALK_BUTTONS
+    auto* dashboard = dynamic_cast<JarvisDashboardDisplay*>(Board::GetInstance().GetDisplay());
+    if (dashboard != nullptr) {
+        dashboard->SetTalkButtonsListening(listening);
+    }
+#else
+    (void)listening;
+#endif
 }
 
 #ifdef CONFIG_APOLLO_PROTOCOL
@@ -1581,6 +1731,28 @@ void Application::HandleListenWatchdogEvent() {
     const int64_t offset = vad_last_offset_us_.load();
     const int64_t effective_onset = std::max(onset, listen_started_us_ + kCueGraceUs);
 
+    // Ventana abierta con el botón: espera más a que arranques y tolera
+    // pausas largas. Los plazos corren desde el último toque, así que tocar de
+    // nuevo da más tiempo, también en medio de una pausa.
+    int64_t endpoint_silence_us = kEndpointSilenceUs;
+    int64_t no_speech_timeout_us = kNoSpeechTimeoutUs;
+    int64_t window_anchor_us = listen_started_us_;
+    if (talk_window_active_) {
+        endpoint_silence_us = (int64_t)CONFIG_JARVIS_TALK_WINDOW_SILENCE_MS * 1000;
+        no_speech_timeout_us = (int64_t)CONFIG_JARVIS_TALK_WINDOW_SECONDS * 1000 * 1000;
+        window_anchor_us = std::max(listen_started_us_, talk_window_anchor_us_);
+        if (now - listen_started_us_ >= kTalkWindowMaxUs) {
+            ESP_LOGW(TAG, "Talk window hit its %llds cap",
+                     (long long)(kTalkWindowMaxUs / 1000000));
+            if (listen_heard_speech_) {
+                StopListening();
+            } else {
+                CancelListening();
+            }
+            return;
+        }
+    }
+
     if (onset > 0) {
         const int64_t speech_end = in_speech ? now : offset;
         if (speech_end - effective_onset >= kMinSpeechUs) {
@@ -1589,7 +1761,9 @@ void Application::HandleListenWatchdogEvent() {
     }
 
     if (listen_heard_speech_) {
-        if (!in_speech && offset > 0 && now - offset >= kEndpointSilenceUs) {
+        const int64_t silence_since =
+            talk_window_active_ ? std::max(offset, window_anchor_us) : offset;
+        if (!in_speech && offset > 0 && now - silence_since >= endpoint_silence_us) {
             // Se loguea el retardo real desde el fin del habla: es lo que el
             // usuario percibe como "tarda en arrancar". Incluye el silencio
             // exigido más la granularidad del sondeo del watchdog.
@@ -1597,7 +1771,7 @@ void Application::HandleListenWatchdogEvent() {
                      (long long)((now - offset) / 1000));
             StopListening();
         }
-    } else if (now - listen_started_us_ >= kNoSpeechTimeoutUs) {
+    } else if (now - window_anchor_us >= no_speech_timeout_us) {
         ESP_LOGI(TAG, "Nothing said, cancelling the listen session");
         CancelListening();
     }
@@ -1676,7 +1850,7 @@ void Application::HandleWakeWordDetectedEvent() {
             audio_service_.ResetDecoder();
             audio_service_.PlaySound(Lang::SoundVariants::ListenStart());
             // Re-enable wake word detection as it was stopped by the detection itself
-            audio_service_.EnableWakeWordDetection(true);
+            EnableWakeWordIfAllowed(true);
         } else {
             // Play popup sound and start listening again
             play_popup_on_listening_ = true;
@@ -1698,7 +1872,7 @@ void Application::BeginWakeWordInvoke(const std::string& wake_word) {
     if (!SetDeviceState(kDeviceStateConnecting)) {
         // Wake word detection was stopped by the detection itself; restore it
         // so the device does not become unresponsive to wake words.
-        audio_service_.EnableWakeWordDetection(true);
+        EnableWakeWordIfAllowed(true);
         return;
     }
 
@@ -1765,15 +1939,18 @@ void Application::HandleStateChangedEvent() {
     auto display = board.GetDisplay();
     auto led = board.GetLed();
     led->OnStateChanged();
+    UpdateScreenTalkButtons(new_state == kDeviceStateListening);
 
     switch (new_state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
+            // La ventana dura la conversación; en reposo se termina.
+            talk_window_active_ = false;
             display->SetStatus(Lang::Strings::STANDBY);
             display->ClearChatMessages();    // Clear messages first
             display->SetEmotion("neutral");  // Then set emotion (wechat mode checks child count)
             audio_service_.EnableVoiceProcessing(false);
-            audio_service_.EnableWakeWordDetection(true);
+            EnableWakeWordIfAllowed(true);
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
@@ -1814,7 +1991,7 @@ void Application::HandleStateChangedEvent() {
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);
                 // Only AFE wake word can be detected in speaking mode
-                audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
+                EnableWakeWordIfAllowed(audio_service_.IsAfeWakeWord());
             }
             audio_service_.ResetDecoder();
             break;
@@ -1856,7 +2033,7 @@ void Application::StartListeningAudio() {
 void Application::ConfigureWakeWordForListening() {
 #ifdef CONFIG_WAKE_WORD_DETECTION_IN_LISTENING
     // Enable wake word detection in listening mode (configured via Kconfig)
-    audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
+    EnableWakeWordIfAllowed(audio_service_.IsAfeWakeWord());
 #else
     // Disable wake word detection in listening mode
     audio_service_.EnableWakeWordDetection(false);

@@ -19,6 +19,8 @@
 #include "device_state.h"
 #include "device_state_machine.h"
 
+class Button;
+
 // Main event bits
 #define MAIN_EVENT_SCHEDULE             (1 << 0)
 #define MAIN_EVENT_SEND_AUDIO           (1 << 1)
@@ -229,7 +231,35 @@ public:
     bool IsConfirmActive() const { return confirm_active_.load(); }
     void OnConfirmTouchRelease(int x, int y);
 
+    // Botón Hablar (pantalla o GPIO), seguros desde cualquier tarea. Un toque
+    // abre la ventana de escucha, o la reinicia si ya está abierta; mantenerlo
+    // apretado sigue yendo por StartListening/StopListening (push-to-talk).
+    void TalkButtonTap();
+    // Botón Enviar: corta la escucha abierta y manda lo grabado.
+    void TalkButtonSend();
+
 private:
+    // Ventana de escucha abierta con un toque. Dura toda la conversación (las
+    // escuchas que se reabren tras la respuesta usan las mismas reglas) y se
+    // apaga al volver a reposo.
+    bool talk_window_active_ = false;
+    // Desde cuándo corren los plazos de la ventana: la apertura del micrófono
+    // o el último toque que la reinició.
+    int64_t talk_window_anchor_us_ = 0;
+    void HandleTalkButtonTap();
+    void HandleTalkButtonSend();
+    void InitializeTalkButtonGpio();
+    // Pulsador de JARVIS_TALK_BUTTON_GPIO; vive lo que vive la aplicación.
+    Button* talk_button_ = nullptr;
+    // Mantenido apretado: el push-to-talk ya arrancó y el soltar lo envía.
+    std::atomic<bool> talk_button_holding_{false};
+    // El click que llega al soltar un hold no es un toque: se descarta.
+    std::atomic<bool> talk_button_long_pressed_{false};
+    // Con JARVIS_ALWAYS_LISTEN en "n" la palabra de activación nunca se arma.
+    void EnableWakeWordIfAllowed(bool enable);
+    // Los botones de la pantalla reflejan si el micrófono está abierto.
+    void UpdateScreenTalkButtons(bool listening);
+
     std::atomic<bool> confirm_active_{false};
     esp_timer_handle_t confirm_expiry_timer_ = nullptr;
 

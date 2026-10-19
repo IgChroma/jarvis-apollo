@@ -170,6 +170,23 @@ corriendo por un costado y entra por el otro.
 La fuente de la placa no tiene emojis: los carteles son texto y la diferencia visual la hace el
 color del anillo.
 
+### Micrófono solo cuando lo pedís — `main/application.cc`, `Kconfig.projbuild`
+
+Por defecto la placa **no escucha la casa**: en reposo el micrófono está apagado y la palabra
+de activación no corre (el modelo sigue en el binario; `CONFIG_JARVIS_ALWAYS_LISTEN=y` la
+vuelve a prender). El micrófono se abre de tres maneras:
+
+| Cómo | Qué hace |
+|---|---|
+| **Tocar Hablar** (pantalla o pulsador en `CONFIG_JARVIS_TALK_BUTTON_GPIO`) | Abre una ventana: espera hasta 30 s a que empieces; una vez que hablaste, envía tras 5 s de silencio. Mientras hablás se extiende. Otro toque reinicia los plazos. Tope: 3 minutos. |
+| **Mantener Hablar** (o la pantalla en cualquier lado) | Push-to-talk: graba mientras está apretado, soltar envía. |
+| **Tocar Enviar** | Corta la escucha y manda lo grabado, sin esperar el silencio. |
+
+Tocar fuera de los botones con el micrófono abierto lo descarta, como antes. Si Jarvis responde
+con una pregunta, el micrófono se reabre con las mismas reglas de la ventana. Los plazos se
+cambian en `sdkconfig.defaults` (`CONFIG_JARVIS_TALK_WINDOW_SECONDS`,
+`CONFIG_JARVIS_TALK_WINDOW_SILENCE_MS`).
+
 ### Port a la Waveshare 4.3" — `main/boards/waveshare/esp32-s3-touch-lcd-4.3c/`
 
 Apollo solo soportaba una pantalla redonda de 1,85". El board se tomó de xiaozhi-esp32 y se le

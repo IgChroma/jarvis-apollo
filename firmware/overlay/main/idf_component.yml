@@ -111,12 +111,15 @@ dependencies:
     version: ^2.0.2
     rules:
     - if: target in [esp32p4]
+  # Jarvis 2026-10-18: fijado a lo que usa xiaozhi v2.3.0 para la P4-7B. Con
+  # ^2.12.11 / ^1.6.x la placa queda en pantalla negra con el firmware de
+  # fábrica del C6 (xiaozhi-esp32 issue #2139). Solo afecta a la P4.
   espressif/esp_hosted:
-    version: ^2.12.11
+    version: 2.0.17
     rules:
     - if: target in [esp32h2, esp32p4]
   espressif/esp_wifi_remote:
-    version: ^1.6.2
+    version: '*'
     rules:
     - if: target in [esp32p4]
   espfriends/servo_dog_ctrl:

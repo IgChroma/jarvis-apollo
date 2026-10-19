@@ -108,3 +108,14 @@ CONFIG_MICRO_WAKE_WORD_PHRASE="Hey Jarvis"
 # El manifiesto del modelo declara probability_cutoff 0.97
 CONFIG_MICRO_WAKE_WORD_PROBABILITY_CUTOFF=80
 CONFIG_MICRO_WAKE_WORD_SLIDING_WINDOW_SIZE=5
+
+# --- Jarvis: cuándo se abre el micrófono ---
+# En reposo el micrófono queda APAGADO: se abre con el botón Hablar (pantalla o
+# GPIO) o manteniendo apretada la pantalla. El modelo "Hey Jarvis" se sigue
+# compilando; para volver a la escucha permanente: CONFIG_JARVIS_ALWAYS_LISTEN=y
+# CONFIG_JARVIS_ALWAYS_LISTEN is not set
+CONFIG_JARVIS_SCREEN_TALK_BUTTONS=y
+# Pulsador entre un GPIO libre y GND; -1 = sin botón físico.
+CONFIG_JARVIS_TALK_BUTTON_GPIO=-1
+CONFIG_JARVIS_TALK_WINDOW_SECONDS=30
+CONFIG_JARVIS_TALK_WINDOW_SILENCE_MS=5000

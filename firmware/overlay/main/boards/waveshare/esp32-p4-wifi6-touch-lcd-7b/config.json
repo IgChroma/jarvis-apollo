@@ -1,0 +1,13 @@
+{
+    "manufacturer": "waveshare",
+    "type": "esp32-p4-wifi6-touch-lcd-7b",
+    "target": "esp32p4",
+    "builds": [
+        {
+            "name": "esp32-p4-wifi6-touch-lcd-7b",
+            "sdkconfig_append": [
+                "CONFIG_BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_7B=y"
+            ]
+        }
+    ]
+}

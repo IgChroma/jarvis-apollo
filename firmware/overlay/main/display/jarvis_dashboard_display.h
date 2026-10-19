@@ -9,7 +9,8 @@
 #include <vector>
 
 
-// Tablero informativo para la pantalla de 800x480.
+// Tablero informativo para la pantalla de 800x480 (Waveshare 4.3C, panel RGB)
+// o de 1024x600 (Waveshare P4-7B, panel MIPI-DSI): el reparto se escala al ancho.
 //
 // Reemplaza la UI de chat de LcdDisplay: en vez de una burbuja de conversacion
 // con la cara de fondo, un tablero con una tarjeta por dato. El reparto es el
@@ -28,7 +29,15 @@
 //
 // Los datos llegan en el mensaje `dashboard` del protocolo, ya recortados por
 // el servidor: aca solo se dibujan.
-class JarvisDashboardDisplay : public RgbLcdDisplay {
+// Lo único que cambia entre las dos placas es cómo se conecta LVGL al panel,
+// y eso lo resuelve la clase base.
+#if CONFIG_IDF_TARGET_ESP32P4
+using JarvisDashboardBase = MipiLcdDisplay;
+#else
+using JarvisDashboardBase = RgbLcdDisplay;
+#endif
+
+class JarvisDashboardDisplay : public JarvisDashboardBase {
 public:
     struct AgendaEntry {
         std::string title;
@@ -91,11 +100,23 @@ public:
     void DismissReminder();
     bool IsReminderVisible();
 
+    // Botones Hablar y Enviar (JARVIS_SCREEN_TALK_BUTTONS). El touch no pasa
+    // por LVGL: la tarea de gestos de la placa pregunta qué boton quedo bajo el
+    // dedo, en coordenadas de pantalla.
+    enum class TalkButton { kNone, kTalk, kSend };
+    TalkButton HitTestTalkButtons(int x, int y);
+    // Con el microfono abierto, Hablar ofrece reiniciar la ventana y Enviar se
+    // enciende; en reposo Enviar queda apagado.
+    void SetTalkButtonsListening(bool listening);
+
 private:
     void BuildStatusBar(lv_obj_t* parent);
     void BuildAgendaColumn(lv_obj_t* parent);
     void BuildPendingColumn(lv_obj_t* parent);
     void BuildPetColumn(lv_obj_t* parent);
+    void BuildTalkButtons(lv_obj_t* parent);
+    lv_obj_t* MakeTalkButton(lv_obj_t* parent, uint32_t accent, const char* text,
+                             lv_obj_t** label_out);
 
     lv_obj_t* MakeTile(lv_obj_t* parent, lv_color_t accent, const char* heading);
     void RefreshClockLabel();
@@ -180,6 +201,12 @@ private:
     // lugar en el flex.
     lv_obj_t* reminder_overlay_ = nullptr;
     lv_obj_t* reminder_message_label_ = nullptr;
+
+    lv_obj_t* talk_button_ = nullptr;
+    lv_obj_t* talk_button_label_ = nullptr;
+    lv_obj_t* send_button_ = nullptr;
+    lv_obj_t* send_button_label_ = nullptr;
+    bool talk_buttons_listening_ = false;
 
     // El reloj lo dibuja la placa con su propio RTC: el servidor no tiene por
     // que mandar la hora cuatro veces por minuto solo para que avance.
