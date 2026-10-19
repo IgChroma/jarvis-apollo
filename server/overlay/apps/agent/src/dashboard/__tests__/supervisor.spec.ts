@@ -90,3 +90,54 @@ describe('startDashboardSupervisor', () => {
     expect(pushed.length).toBeGreaterThan(conPlaca);
   });
 });
+
+describe('refreshNow', () => {
+  it('empuja el tablero enseguida, sin esperar la vuelta', async () => {
+    let tileIsOn = false;
+    const pushed: DashboardPayload[] = [];
+    const supervisor = startDashboardSupervisor({
+      getDeviceConnectionCount: () => 1,
+      pushDashboard: (payload) => { pushed.push(payload); },
+      readSources: async () => ({
+        homeTileList: [
+          { entityId: 'light.living', name: 'Living', kind: 'toggle', isOn: tileIsOn, available: true },
+        ],
+      }),
+      intervalMilliseconds: 3_600_000,
+      now: () => NOW,
+    });
+    await Bun.sleep(5);
+    tileIsOn = true;
+    await supervisor.refreshNow();
+    supervisor();
+    expect(pushed).toHaveLength(2);
+    const lastTile = pushed[1]?.home?.tileList[0];
+    expect(lastTile?.kind === 'toggle' && lastTile.isOn).toBe(true);
+  });
+
+  it('si hay una vuelta en curso, la espera y hace otra con datos frescos', async () => {
+    let readCount = 0;
+    let releaseFirstRead: (() => void) | undefined;
+    const pushed: DashboardPayload[] = [];
+    const supervisor = startDashboardSupervisor({
+      getDeviceConnectionCount: () => 1,
+      pushDashboard: (payload) => { pushed.push(payload); },
+      readSources: async () => {
+        readCount += 1;
+        const readNumber = readCount;
+        if (readNumber === 1) {
+          // La primera lectura queda colgada hasta que el test la suelte.
+          await new Promise<void>((resolve) => { releaseFirstRead = resolve; });
+        }
+        return { pending: { listName: 'super', count: 1, itemList: [`lectura ${readNumber}`] } };
+      },
+      intervalMilliseconds: 3_600_000,
+      now: () => NOW,
+    });
+    const refresh = supervisor.refreshNow();
+    releaseFirstRead?.();
+    await refresh;
+    supervisor();
+    expect(pushed.map((payload) => payload.pending?.itemList[0])).toEqual(['lectura 1', 'lectura 2']);
+  });
+});

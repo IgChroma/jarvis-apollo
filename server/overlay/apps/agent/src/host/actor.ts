@@ -1198,6 +1198,10 @@ export function createApolloHostActor(dependencies: ApolloHostActorDependencies)
       // ever open while a finger is down, so there is nothing to mute.
       return;
     }
+    // Swipes: el firmware de las vistas Inicio/Casa (docs/vistas-tablero.md) los
+    // usa para cambiar de vista y ya NO los manda. Esto queda para una placa
+    // con firmware viejo, que sigue cambiando el modo de habla como antes; con
+    // el firmware nuevo nunca se ejecuta.
     const direction = gesture === 'swipe_right' ? 1 : -1;
     const nextSpeechMode = cycleDeskSpeechMode(state.speechMode, direction);
     await setSessionPreference(sqlExecutor, 'speechMode', nextSpeechMode.id);
@@ -1205,6 +1209,46 @@ export function createApolloHostActor(dependencies: ApolloHostActorDependencies)
     // color (and the switch sound), not by a text label.
     setState({ ...state, speechMode: nextSpeechMode.id, caption: null });
     pushUiState(connection);
+  }
+
+  // Toque en un mosaico de la vista Casa. El manejador lo pone host/main.ts
+  // (es quien tiene el cliente de Home Assistant y el supervisor del tablero);
+  // sin HA configurado no hay manejador y el toque solo queda en el log.
+  let homeAssistantActionHandler:
+    | ((
+        action: Pick<Extract<DeviceToServerMessage, { type: 'ha_action' }>, 'entityId' | 'action'>,
+      ) => Promise<void>)
+    | undefined;
+
+  function handleHomeAssistantAction(
+    deviceMessage: Extract<DeviceToServerMessage, { type: 'ha_action' }>,
+  ): void {
+    if (homeAssistantActionHandler === undefined) {
+      console.log(
+        JSON.stringify({
+          level: 'warn',
+          message: 'ha_action_sin_home_assistant',
+          entityId: deviceMessage.entityId,
+        }),
+      );
+      return;
+    }
+    // Sin await: la llamada a HA puede tardar hasta su timeout y mientras
+    // tanto la placa tiene que poder seguir mandando (por ejemplo, empezar a
+    // hablar). La placa ya pintó el cambio; el tablero que sigue lo confirma.
+    void homeAssistantActionHandler({
+      entityId: deviceMessage.entityId,
+      action: deviceMessage.action,
+    }).catch((error: unknown) => {
+      console.log(
+        JSON.stringify({
+          level: 'warn',
+          message: 'ha_action_fallo',
+          entityId: deviceMessage.entityId,
+          detail: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    });
   }
 
   async function handleTelemetry(
@@ -1384,6 +1428,11 @@ export function createApolloHostActor(dependencies: ApolloHostActorDependencies)
         await handleGesture(connection, deviceMessage.gesture);
         break;
       }
+      case 'ha_action': {
+        noteUserActivity();
+        handleHomeAssistantAction(deviceMessage);
+        break;
+      }
       case 'mcp': {
         deviceMcpRequestRegistry.resolvePendingRequest(deviceMessage.payload);
         break;
@@ -1407,6 +1456,9 @@ export function createApolloHostActor(dependencies: ApolloHostActorDependencies)
     setState,
     attachEngines(engines: NonNullable<typeof attachedEngines>): void {
       attachedEngines = engines;
+    },
+    attachHomeAssistantActionHandler(handler: NonNullable<typeof homeAssistantActionHandler>): void {
+      homeAssistantActionHandler = handler;
     },
     callDeviceTool,
     currentFocusState,

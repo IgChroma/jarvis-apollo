@@ -674,6 +674,19 @@ export class Apollo extends Agent<Env, ApolloState> {
         };
         break;
       }
+      case 'ha_action': {
+        // La vista Casa y Home Assistant viven en el host de Bun
+        // (host/actor.ts): el Worker de Cloudflare no llega a la red de la casa
+        // ni manda el tablero con mosaicos. Se ignora con una línea de log.
+        console.log(
+          JSON.stringify({
+            level: 'warn',
+            message: 'ha_action_no_soportado_en_worker',
+            entityId: deviceMessage.entityId,
+          }),
+        );
+        break;
+      }
     }
   }
 
@@ -1884,6 +1897,8 @@ export class Apollo extends Agent<Env, ApolloState> {
       // accidental double tap silently swallowing every turn was a trap.
       return;
     }
+    // Swipes: el firmware de las vistas Inicio/Casa ya no los manda (cambian de
+    // vista en la placa). Queda para firmware viejo; ver host/actor.ts.
     const direction = gesture === 'swipe_right' ? 1 : -1;
     const nextSpeechMode = cycleDeskSpeechMode(this.state.speechMode, direction);
     await setSessionPreference(this.#sqlExecutor(), 'speechMode', nextSpeechMode.id);

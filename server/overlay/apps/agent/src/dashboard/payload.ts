@@ -1,6 +1,6 @@
 import { formatTimeUntil } from '@/idle/rotator';
-import type { ServerToDeviceMessage } from '@/protocol/schema';
-import type { DeskWeatherSnapshot } from '@/weather/fetch';
+import type { HomeTile, ServerToDeviceMessage } from '@/protocol/schema';
+import { resolveCalendarDateInTimeZone } from '@/time/zone';
 
 // Armado del tablero que se le manda a la placa.
 //
@@ -28,6 +28,16 @@ export const DASHBOARD_PENDING_MAX_ITEM_COUNT = 4;
 export const DASHBOARD_PENDING_MAX_CHARACTER_COUNT = 24;
 export const DASHBOARD_AGENDA_MAX_CHARACTER_COUNT = 22;
 
+// Vistas Inicio/Casa (docs/vistas-tablero.md). Estos largos son TOTALES, con
+// el "…" incluido: la placa los dibuja en cajas fijas y el contrato dice
+// "18 caracteres", no "18 más el punto suspensivo".
+export const DASHBOARD_TILE_NAME_MAX_CHARACTER_COUNT = 18;
+export const DASHBOARD_TILE_VALUE_MAX_CHARACTER_COUNT = 10;
+export const DASHBOARD_TILE_MAX_COUNT = 12;
+export const DASHBOARD_TODAY_EVENT_TITLE_MAX_CHARACTER_COUNT = 22;
+export const DASHBOARD_TODAY_EVENT_MAX_COUNT = 4;
+const ALL_DAY_TIME_LABEL = 'Todo el día';
+
 // El tipo se DERIVA del esquema del protocolo en vez de escribirse a mano.
 // Así no pueden divergir, y sobre todo: agregar un campo al payload sin
 // declararlo en el esquema pasa a ser un error de compilación en vez de un
@@ -36,17 +46,39 @@ export type DashboardPayload = Extract<ServerToDeviceMessage, { type: 'dashboard
 export type DashboardAgendaEntry = NonNullable<DashboardPayload['agendaList']>[number];
 export type DashboardPendingTile = NonNullable<DashboardPayload['pending']>;
 export type DashboardTravelTile = NonNullable<DashboardPayload['travel']>;
+export type DashboardWeather = NonNullable<DashboardPayload['weather']>;
+export type DashboardMonthCalendar = NonNullable<DashboardPayload['monthCalendar']>;
+export type DashboardHome = NonNullable<DashboardPayload['home']>;
 
 export type DashboardSourceData = {
-  readonly weather?: DeskWeatherSnapshot;
+  // Con la forma de `DeskWeatherSnapshot` (open-meteo) o la extendida que sale
+  // de Home Assistant (mín./máx., condición cruda, humedad).
+  readonly weather?: DashboardWeather;
   readonly clock?: { readonly timezone: string; readonly isoNow: string };
+  // Zona horaria para el calendario del mes. Sin ella no se arma: "hoy" depende
+  // de dónde está la placa, no del UTC del contenedor.
+  readonly timezone?: string;
   // Eventos del calendario y recordatorios se mezclan en una sola lista: para
   // quien mira la pantalla las dos cosas son "algo que se viene", y separarlas
   // en dos tarjetas gastaría el doble de espacio para la mitad de información.
+  // Los eventos (de Home Assistant) además marcan los días del calendario del
+  // mes; los recordatorios no, porque los timers y los avisos recurrentes
+  // llenarían el mes de puntos que no son "eventos".
   readonly calendarEventList?: readonly {
     readonly title: string;
     readonly startsAtMilliseconds: number;
+    // Fin exclusivo; sin fin, el evento ocupa solo su día de inicio.
+    readonly endsAtMilliseconds?: number;
+    readonly isAllDay?: boolean;
   }[];
+  // Mosaicos de la vista Casa ya traducidos desde HA, sin recortar.
+  // `undefined` = no hay Home Assistant configurado o no respondió.
+  readonly homeTileList?: readonly HomeTile[];
+  readonly dollarBlue?: {
+    readonly buy: number;
+    readonly sell: number;
+    readonly updatedAtMilliseconds: number;
+  };
   readonly reminderList?: readonly {
     readonly text: string;
     readonly dueAtMilliseconds: number;
@@ -77,6 +109,194 @@ export function clipDashboardText(text: string, maximumCharacterCount: number): 
     ? clipped.slice(0, lastSpaceIndex)
     : clipped;
   return `${trimmed}…`;
+}
+
+/** Como `clipDashboardText`, pero el resultado (con "…") nunca pasa del máximo. */
+export function clipDashboardTextWithin(text: string, maximumCharacterCount: number): string {
+  const collapsed = text.replace(/\s+/g, ' ').trim();
+  if (collapsed.length <= maximumCharacterCount) {
+    return collapsed;
+  }
+  return clipDashboardText(collapsed, Math.max(1, maximumCharacterCount - 1));
+}
+
+/** "hace 12 min": cuánto hace que se actualizó un dato que se cachea. */
+export function formatTimeAgo(atMilliseconds: number, nowMilliseconds: number): string {
+  const elapsedMinutes = Math.floor((nowMilliseconds - atMilliseconds) / 60_000);
+  if (elapsedMinutes < 1) {
+    return 'recién';
+  }
+  if (elapsedMinutes < 60) {
+    return `hace ${elapsedMinutes} min`;
+  }
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) {
+    return `hace ${elapsedHours} h`;
+  }
+  const elapsedDays = Math.floor(elapsedHours / 24);
+  return elapsedDays === 1 ? 'hace 1 día' : `hace ${elapsedDays} días`;
+}
+
+type LocalDate = { readonly year: number; readonly month: number; readonly day: number };
+
+function isSameLocalDate(left: LocalDate, right: LocalDate): boolean {
+  return left.year === right.year && left.month === right.month && left.day === right.day;
+}
+
+// Aritmética de días sobre la fecha de calendario (sin horas): UTC sirve de
+// "calendario puro" porque no tiene cambios de hora.
+function addDays(date: LocalDate, dayCount: number): LocalDate {
+  const shifted = new Date(Date.UTC(date.year, date.month - 1, date.day + dayCount));
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+  };
+}
+
+function compareLocalDate(left: LocalDate, right: LocalDate): number {
+  return left.year - right.year || left.month - right.month || left.day - right.day;
+}
+
+// "18:30" en la zona de la placa. Con opciones explícitas y h23: el ICU del
+// contenedor no tiene el AM/PM de es-AR (ver time/zone.ts).
+function formatLocalTime(timezone: string, atMilliseconds: number): string {
+  const partList = new Intl.DateTimeFormat('en-GB', {
+    timeZone: timezone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(atMilliseconds));
+  const readPart = (type: string) => partList.find((part) => part.type === type)?.value ?? '00';
+  return `${readPart('hour')}:${readPart('minute')}`;
+}
+
+// Días locales que ocupa un evento, de su inicio a su fin exclusivo. Con tope,
+// por si un evento de varios meses llega con un fin absurdo.
+const MAXIMUM_EVENT_SPAN_DAY_COUNT = 62;
+
+function listEventLocalDates(
+  event: NonNullable<DashboardSourceData['calendarEventList']>[number],
+  timezone: string,
+): readonly LocalDate[] {
+  const firstDate = resolveCalendarDateInTimeZone(timezone, event.startsAtMilliseconds);
+  const endsAt = event.endsAtMilliseconds;
+  const lastDate =
+    endsAt !== undefined && Number.isFinite(endsAt) && endsAt > event.startsAtMilliseconds
+      ? resolveCalendarDateInTimeZone(timezone, endsAt - 1)
+      : firstDate;
+  const dateList: LocalDate[] = [];
+  for (
+    let date: LocalDate = firstDate;
+    compareLocalDate(date, lastDate) <= 0 && dateList.length < MAXIMUM_EVENT_SPAN_DAY_COUNT;
+    date = addDays(date, 1)
+  ) {
+    dateList.push(date);
+  }
+  return dateList;
+}
+
+export function buildMonthCalendar(input: {
+  readonly timezone: string;
+  readonly nowMilliseconds: number;
+  readonly calendarEventList: NonNullable<DashboardSourceData['calendarEventList']>;
+}): DashboardMonthCalendar {
+  const today = resolveCalendarDateInTimeZone(input.timezone, input.nowMilliseconds);
+  // getUTCDay da 0 = domingo; la grilla arranca el lunes (0 = lunes).
+  const firstWeekday = (new Date(Date.UTC(today.year, today.month - 1, 1)).getUTCDay() + 6) % 7;
+  const dayCount = new Date(Date.UTC(today.year, today.month, 0)).getUTCDate();
+
+  const eventDaySet = new Set<number>();
+  const todayTimedList: { readonly atMilliseconds: number; readonly title: string }[] = [];
+  const todayAllDayList: string[] = [];
+  for (const event of input.calendarEventList) {
+    if (!Number.isFinite(event.startsAtMilliseconds)) {
+      continue;
+    }
+    const dateList = listEventLocalDates(event, input.timezone);
+    for (const date of dateList) {
+      if (date.year === today.year && date.month === today.month) {
+        eventDaySet.add(date.day);
+      }
+    }
+    if (!dateList.some((date) => isSameLocalDate(date, today))) {
+      continue;
+    }
+    const startsToday = isSameLocalDate(dateList[0] ?? today, today);
+    // Un evento con hora que empezó ayer y sigue hoy se lee como "todo el día":
+    // poner la hora de ayer confunde más de lo que informa.
+    if (event.isAllDay === true || !startsToday) {
+      todayAllDayList.push(event.title);
+    } else {
+      todayTimedList.push({ atMilliseconds: event.startsAtMilliseconds, title: event.title });
+    }
+  }
+
+  // Primero lo que tiene hora, en orden; después los de todo el día.
+  const todayEventList = [
+    ...todayTimedList
+      .toSorted((left, right) => left.atMilliseconds - right.atMilliseconds)
+      .map((entry) => ({
+        timeLabel: formatLocalTime(input.timezone, entry.atMilliseconds),
+        title: entry.title,
+      })),
+    ...todayAllDayList.map((title) => ({ timeLabel: ALL_DAY_TIME_LABEL, title })),
+  ]
+    .map((entry) => ({
+      timeLabel: entry.timeLabel,
+      title: clipDashboardTextWithin(entry.title, DASHBOARD_TODAY_EVENT_TITLE_MAX_CHARACTER_COUNT),
+    }))
+    .filter((entry) => entry.title.length > 0)
+    .slice(0, DASHBOARD_TODAY_EVENT_MAX_COUNT);
+
+  return {
+    year: today.year,
+    month: today.month,
+    todayDay: today.day,
+    firstWeekday,
+    dayCount,
+    eventDayList: [...eventDaySet].toSorted((left, right) => left - right),
+    todayEventList,
+  };
+}
+
+function clipHomeTile(tile: HomeTile): HomeTile | undefined {
+  const name = clipDashboardTextWithin(tile.name, DASHBOARD_TILE_NAME_MAX_CHARACTER_COUNT);
+  if (name.length === 0) {
+    return undefined;
+  }
+  if (tile.kind === 'sensor') {
+    const value = clipDashboardTextWithin(tile.value, DASHBOARD_TILE_VALUE_MAX_CHARACTER_COUNT);
+    return { ...tile, name, value: value.length > 0 ? value : '—' };
+  }
+  return { ...tile, name };
+}
+
+export function buildHomeCard(input: {
+  readonly homeTileList: DashboardSourceData['homeTileList'];
+  readonly dollarBlue: DashboardSourceData['dollarBlue'];
+  readonly nowMilliseconds: number;
+}): DashboardHome | undefined {
+  // Sin Home Assistant y sin dólar no hay vista Casa que mandar. Con HA pero
+  // sin nada etiquetado sí: la lista vacía le dice a la placa "no hay
+  // mosaicos", que no es lo mismo que "no sé".
+  if (input.homeTileList === undefined && input.dollarBlue === undefined) {
+    return undefined;
+  }
+  const home: DashboardHome = {
+    tileList: (input.homeTileList ?? [])
+      .map(clipHomeTile)
+      .filter((tile): tile is HomeTile => tile !== undefined)
+      .slice(0, DASHBOARD_TILE_MAX_COUNT),
+  };
+  if (input.dollarBlue !== undefined) {
+    home.dollarBlue = {
+      buy: input.dollarBlue.buy,
+      sell: input.dollarBlue.sell,
+      updatedLabel: formatTimeAgo(input.dollarBlue.updatedAtMilliseconds, input.nowMilliseconds),
+    };
+  }
+  return home;
 }
 
 export function buildDashboardPayload(input: DashboardSourceData): DashboardPayload {
@@ -133,6 +353,25 @@ export function buildDashboardPayload(input: DashboardSourceData): DashboardPayl
       label: input.travel.destinationLabel,
       minutes: Math.round(input.travel.minutes),
     };
+  }
+
+  // El calendario del mes sale aunque no haya Home Assistant: la grilla con hoy
+  // resaltado sirve sola, y así la columna derecha no queda con un hueco.
+  if (input.timezone !== undefined) {
+    payload.monthCalendar = buildMonthCalendar({
+      timezone: input.timezone,
+      nowMilliseconds: input.nowMilliseconds,
+      calendarEventList: input.calendarEventList ?? [],
+    });
+  }
+
+  const home = buildHomeCard({
+    homeTileList: input.homeTileList,
+    dollarBlue: input.dollarBlue,
+    nowMilliseconds: input.nowMilliseconds,
+  });
+  if (home !== undefined) {
+    payload.home = home;
   }
 
   return payload;

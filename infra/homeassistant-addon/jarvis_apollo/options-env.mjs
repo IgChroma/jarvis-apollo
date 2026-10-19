@@ -60,7 +60,9 @@ const SWITCH_OPTIONS = {
 
 const REQUIRED = ['DEVICE_SHARED_SECRET', 'DASHBOARD_SHARED_SECRET', 'OPENROUTER_API_KEY'];
 // Las fija el add-on: la base vive en /data/apollo y el puerto es el publicado.
-const RESERVED = new Set(['APOLLO_DATA_DIRECTORY', 'APOLLO_HOST_PORT']);
+// SUPERVISOR_TOKEN la inyecta el Supervisor (homeassistant_api: true) y llega a
+// Apollo sola, por el entorno heredado: no pasa por acá ni se puede pisar.
+const RESERVED = new Set(['APOLLO_DATA_DIRECTORY', 'APOLLO_HOST_PORT', 'SUPERVISOR_TOKEN']);
 const NAME_PATTERN = /^[A-Z_][A-Z0-9_]*$/;
 
 const fail = (message) => {
@@ -133,6 +135,11 @@ console.error(
     feature('Vencimientos Gmail', has('GMAIL_USER') && has('GMAIL_APP_PASSWORD')),
     feature('WhatsApp', has('WAHA_API_KEY')),
     feature('Parlante externo', has('SPEAKER_URL') && has('SPEAKER_TOKEN')),
+    // Vistas Inicio/Casa: el token del Supervisor (o HA_URL + HA_TOKEN por extra_env).
+    feature(
+      'Home Assistant',
+      !isBlank(process.env.SUPERVISOR_TOKEN) || (has('HA_URL') && has('HA_TOKEN')),
+    ),
     feature('MOCK_VOICE', has('MOCK_VOICE')),
   ].join(' · '),
 );

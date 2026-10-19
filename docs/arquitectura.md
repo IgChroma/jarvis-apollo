@@ -126,7 +126,7 @@ herramienta MCP se paga en el prompt de cada turno; un cron que hace `fetch` no 
 | Vencimientos (Gmail) | 08:00 y 18:00 | IMAP, solo asuntos de vencimiento/deuda, extracción con el LLM, avisos |
 | Partidos | diario (opcional) | ESPN, próximas 26 h, aviso antes del partido |
 | Torneos | diario (opcional) | Torneos nuevos de Premier Padel |
-| Tablero | cada 10 s | Clima, agenda, pendientes, viaje → placa (siempre, cambie o no: así una placa que se reinició no queda vacía) |
+| Tablero | cada 10 s y al tocar un mosaico | Clima, agenda, calendario del mes, pendientes, viaje, mosaicos de Home Assistant (etiqueta `jarvis`) y dólar blue → placa (siempre, cambie o no: así una placa que se reinició no queda vacía). Ver [vistas-tablero.md](vistas-tablero.md) |
 | Supervisor MCP | cada 60 s | Reconecta servidores MCP caídos |
 | Sync Notion | cada 60 s y a los 2 s de un cambio | Reconcilia listas en las dos direcciones |
 

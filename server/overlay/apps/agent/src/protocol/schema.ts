@@ -23,6 +23,9 @@ export const deskFaceEmotionSchema = z.enum([
 
 export type DeskFaceEmotionName = z.infer<typeof deskFaceEmotionSchema>;
 
+// Los swipes quedan en el esquema aunque el firmware de las vistas Inicio/Casa
+// ya no los manda (los usa para cambiar de vista, docs/vistas-tablero.md): una
+// placa con firmware viejo los sigue mandando y no tiene que recibir un error.
 export const deviceGestureSchema = z.enum([
   'tap',
   'double_tap',
@@ -37,6 +40,47 @@ export type DeskSoundEffectName = z.infer<typeof deskSoundEffectSchema>;
 export const confirmCloseReasonSchema = z.enum(['resolved', 'expired', 'orphaned']);
 
 export type ConfirmCloseReasonName = z.infer<typeof confirmCloseReasonSchema>;
+
+// Lo que se puede hacer desde un mosaico de la vista Casa.
+export const homeAssistantTileActionSchema = z.enum([
+  'toggle',
+  'climate_up',
+  'climate_down',
+]);
+
+export type HomeAssistantTileAction = z.infer<typeof homeAssistantTileActionSchema>;
+
+// Mosaicos de la vista Casa. Un union por `kind` en vez de un objeto con todo
+// opcional: así un mosaico de interruptor sin `isOn` es un error de compilación
+// en el servidor y no una tarjeta que la placa dibuja a medias.
+const homeTileBaseShape = {
+  entityId: z.string().min(1),
+  name: z.string().min(1),
+  available: z.boolean(),
+};
+
+export const homeTileSchema = z.discriminatedUnion('kind', [
+  z.object({
+    ...homeTileBaseShape,
+    kind: z.literal('toggle'),
+    isOn: z.boolean(),
+  }),
+  z.object({
+    ...homeTileBaseShape,
+    kind: z.literal('sensor'),
+    value: z.string().min(1),
+    unit: z.string().min(1).optional(),
+  }),
+  z.object({
+    ...homeTileBaseShape,
+    kind: z.literal('climate'),
+    currentC: z.number().optional(),
+    targetC: z.number().optional(),
+    hvacMode: z.string().min(1).optional(),
+  }),
+]);
+
+export type HomeTile = z.infer<typeof homeTileSchema>;
 
 export const deviceToServerMessageSchema = z.discriminatedUnion('type', [
   z.object({
@@ -138,6 +182,17 @@ export const deviceToServerMessageSchema = z.discriminatedUnion('type', [
     playedMilliseconds: z.number().int().nonnegative(),
     ts: z.number().int().nonnegative(),
   }),
+  // Un toque en un mosaico de la vista Casa (docs/vistas-tablero.md). El
+  // `entityId` se acepta como texto cualquiera a propósito: el formato y si la
+  // entidad está habilitada los valida el servidor al ejecutar
+  // (homeassistant/actions.ts). Rechazarlo acá le mostraría a la placa un
+  // "Mensaje no reconocido" por un mosaico viejo que quedó en pantalla.
+  z.object({
+    type: z.literal('ha_action'),
+    entityId: z.string().min(1).max(255),
+    action: homeAssistantTileActionSchema,
+    ts: z.number().int().nonnegative(),
+  }),
 ]);
 
 export type DeviceToServerMessage = z.infer<typeof deviceToServerMessageSchema>;
@@ -223,6 +278,12 @@ export const serverToDeviceMessageSchema = z.discriminatedUnion('type', [
         temperatureC: z.number(),
         conditionLabel: z.string().min(1),
         updatedAt: z.string().min(1),
+        // Vistas Inicio/Casa: salen del clima de Home Assistant. Con open-meteo
+        // (sin HA) no vienen y la placa no dibuja la mín./máx.
+        conditionCode: z.string().min(1).optional(),
+        minC: z.number().optional(),
+        maxC: z.number().optional(),
+        humidityPercent: z.number().optional(),
       })
       .optional(),
     agendaList: z
@@ -244,6 +305,40 @@ export const serverToDeviceMessageSchema = z.discriminatedUnion('type', [
       .object({
         label: z.string().min(1),
         minutes: z.number().int().nonnegative(),
+      })
+      .optional(),
+    // Calendario del mes de la vista Inicio. Viaja armado (primer día de la
+    // semana, cantidad de días) para que la placa no haga aritmética de fechas.
+    monthCalendar: z
+      .object({
+        year: z.number().int(),
+        month: z.number().int().min(1).max(12),
+        todayDay: z.number().int().min(1).max(31),
+        // 0 = lunes … 6 = domingo: la grilla argentina arranca el lunes.
+        firstWeekday: z.number().int().min(0).max(6),
+        dayCount: z.number().int().min(28).max(31),
+        eventDayList: z.array(z.number().int().min(1).max(31)),
+        todayEventList: z
+          .array(
+            z.object({
+              timeLabel: z.string().min(1),
+              title: z.string().min(1),
+            }),
+          )
+          .max(4),
+      })
+      .optional(),
+    // Vista Casa: mosaicos de Home Assistant y el dólar blue.
+    home: z
+      .object({
+        tileList: z.array(homeTileSchema).max(12),
+        dollarBlue: z
+          .object({
+            buy: z.number(),
+            sell: z.number(),
+            updatedLabel: z.string().min(1),
+          })
+          .optional(),
       })
       .optional(),
   }),

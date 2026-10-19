@@ -110,6 +110,34 @@ viejo apagado, copiá `jarvis.sqlite` (y si querés `blobs/`) del volumen `docke
 importar igual: desinstalá el add-on (borra sus datos), dejá los archivos en `import/` e
 instalalo de nuevo.
 
+## Tablero: vistas Inicio y Casa (etiqueta `jarvis`)
+
+Desde la versión 0.2.0 el add-on tiene acceso a la API de Home Assistant
+(`homeassistant_api: true`): el Supervisor le pasa un token propio y no hay que configurar
+nada. Lo que se muestra en la placa se elige con una **etiqueta** de Home Assistant llamada
+`jarvis` (**Configuración → Áreas, etiquetas y zonas → Etiquetas → Crear etiqueta**), que se le
+pone a cada entidad desde su ventana de configuración (⚙ → **Etiquetas**):
+
+| Entidad con la etiqueta | Dónde aparece | Qué hace |
+|---|---|---|
+| `light.*`, `switch.*`, `fan.*`, `input_boolean.*` | Vista **Casa**, mosaico interruptor | Un toque la prende o la apaga |
+| `sensor.*`, `binary_sensor.*` | Vista **Casa**, mosaico sensor | Muestra valor y unidad; no se toca |
+| `climate.*` | Vista **Casa**, mosaico clima | Temperatura actual, objetivo, modo y botones − / + (0,5 °C) |
+| `calendar.*` | Vista **Inicio**: agenda y calendario del mes | Si ningún calendario tiene la etiqueta, se usan todos |
+| `weather.*` | Vista **Inicio**: tarjeta de clima con mín./máx. | Si ninguno tiene la etiqueta, se usa `weather.home` |
+
+- Entran hasta **12 mosaicos** (primero interruptores, después climas y sensores, cada grupo
+  por nombre). El nombre es el *nombre amigable* de la entidad, recortado a 18 caracteres:
+  conviene ponerle uno corto ("Living", "Aire dormitorio").
+- Solo se pueden tocar entidades que **tienen la etiqueta en ese momento**: la placa no puede
+  manejar nada que no hayas etiquetado. Sacar la etiqueta deshabilita el mosaico en menos de
+  un minuto.
+- La vista Casa también muestra el **dólar blue** (dolarapi.com, cada 15 min), con o sin
+  Home Assistant.
+- Si Home Assistant no responde, esas tarjetas desaparecen y el resto del tablero sigue igual
+  (el clima vuelve a salir de open-meteo, sin mín./máx.).
+- El resumen del **Registro** al arrancar dice `Home Assistant: sí` cuando el token está.
+
 ## Integraciones opcionales
 
 Todas vienen apagadas y sin ellas el add-on arranca igual.

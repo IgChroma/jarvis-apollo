@@ -10,7 +10,13 @@ import { createBroadcastUploadRegistry } from '@/host/broadcast';
 import { parseHostConfiguration } from '@/host/configuration';
 import { createHostInitiativeEngine } from '@/host/initiative';
 import { createHostMcpManager, startMcpConnectionSupervisor } from '@/host/mcp';
+import { createDollarBlueReader } from '@/dashboard/dollar';
 import { startDashboardSupervisor } from '@/dashboard/supervisor';
+import {
+  createHomeAssistantClient,
+  resolveHomeAssistantConnection,
+} from '@/homeassistant/client';
+import { createHomeAssistantDashboardSource } from '@/homeassistant/source';
 import { startIdleRotation } from '@/idle/supervisor';
 import {
   TRAVEL_TIME_CACHE_MILLISECONDS,
@@ -243,34 +249,98 @@ export async function startApolloHost(
   // firmware viejo ignora el mensaje `dashboard` (la cadena de strcmp del
   // protocolo no tiene un else que falle) y el nuevo ignora los carteles.
   // Cuando la placa esté flasheada, la rotación se retira.
-  startDashboardSupervisor({
+  //
+  // Home Assistant (vistas Inicio/Casa, docs/vistas-tablero.md): dentro del
+  // add-on con SUPERVISOR_TOKEN, afuera con HA_URL + HA_TOKEN. Sin ninguno,
+  // `homeAssistantSource` queda undefined y el tablero sale como antes, sin
+  // mosaicos ni eventos de calendario.
+  const homeAssistantConnection = resolveHomeAssistantConnection(processEnvironment);
+  const homeAssistantSource =
+    homeAssistantConnection === undefined
+      ? undefined
+      : createHomeAssistantDashboardSource({
+          client: createHomeAssistantClient({ connection: homeAssistantConnection }),
+        });
+  if (homeAssistantConnection !== undefined) {
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        message: 'home_assistant_tablero_habilitado',
+        via: homeAssistantConnection.source,
+      }),
+    );
+  }
+  const readDollarBlue = createDollarBlueReader();
+
+  const dashboardSupervisor = startDashboardSupervisor({
     getDeviceConnectionCount: () => actor.getDeviceConnectionCount(),
     pushDashboard: (payload) => actor.broadcastToDevices(payload),
     readSources: async () => {
-      const [weather, reminderRowList, pending, travel] = await Promise.all([
-        (async () => {
-          const location = await actor.resolveWeatherLocation();
-          return getCachedCurrentDeskWeather({
-            latitude: location.latitude,
-            longitude: location.longitude,
-            locationLabel: location.locationLabel,
-          });
-        })().catch(() => undefined),
+      const location = await actor.resolveWeatherLocation().catch(() => undefined);
+      const [
+        openMeteoWeather,
+        reminderRowList,
+        pending,
+        travel,
+        homeAssistantData,
+        dollarBlue,
+      ] = await Promise.all([
+        (location === undefined
+          ? Promise.resolve(undefined)
+          : getCachedCurrentDeskWeather({
+              latitude: location.latitude,
+              longitude: location.longitude,
+              locationLabel: location.locationLabel,
+            })
+        ).catch(() => undefined),
         actor.listReminderRowList().catch(() => []),
         readPendingListDetail(sqlExecutor).catch(() => undefined),
         (idleTravelTimeReader?.() ?? Promise.resolve(undefined)).catch(() => undefined),
+        (homeAssistantSource === undefined || location === undefined
+          ? Promise.resolve(undefined)
+          : homeAssistantSource.readDashboardData({
+              timezone: location.timezone,
+              locationLabel: location.locationLabel,
+            })
+        ).catch(() => undefined),
+        readDollarBlue().catch(() => undefined),
       ]);
       return {
-        weather,
+        // El clima de HA trae mín./máx.; open-meteo queda de respaldo.
+        weather: homeAssistantData?.weather ?? openMeteoWeather,
+        ...(location === undefined ? {} : { timezone: location.timezone }),
+        calendarEventList: homeAssistantData?.calendarEventList ?? [],
         reminderList: reminderRowList.map((row) => ({
           text: row.message,
           dueAtMilliseconds: new Date(row.firesAtIso).getTime(),
         })),
         pending,
         travel,
+        homeTileList: homeAssistantData?.tileList,
+        dollarBlue,
       };
     },
   });
+
+  // Toque en un mosaico: se llama a HA y se empuja el tablero enseguida, sin
+  // esperar la vuelta de 10 s. Qué entidades y acciones se aceptan lo decide
+  // homeassistant/actions.ts (solo las etiquetadas `jarvis`).
+  if (homeAssistantSource !== undefined) {
+    actor.attachHomeAssistantActionHandler(async (action) => {
+      const result = await homeAssistantSource.executeTileAction(action);
+      console.log(
+        JSON.stringify({
+          level: result.ok ? 'info' : 'warn',
+          message: result.ok ? 'ha_action_ok' : 'ha_action_rechazada',
+          entityId: action.entityId,
+          action: action.action,
+          ...(result.ok ? {} : { motivo: result.reason }),
+        }),
+      );
+      // Aun si se rechazó: la placa ya pintó el cambio y el tablero lo corrige.
+      await dashboardSupervisor.refreshNow();
+    });
+  }
 
   const activeThreadAccessor = actor.getActiveThreadSessionIdSetter();
   const threadEngine = createHostThreadEngine({

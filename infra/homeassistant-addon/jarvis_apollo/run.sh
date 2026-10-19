@@ -21,6 +21,12 @@ unset env_script
 
 export APOLLO_DATA_DIRECTORY="$DATA_DIR"
 export APOLLO_HOST_PORT=8799
+# SUPERVISOR_TOKEN (homeassistant_api: true) ya viene en el entorno del
+# contenedor y `exec bun` lo hereda: Apollo lo usa para leer Home Assistant en
+# http://supervisor/core/api. No se toca ni se loguea.
+if [ -z "${SUPERVISOR_TOKEN:-}" ]; then
+  log "Sin SUPERVISOR_TOKEN: el tablero sale sin las tarjetas de Home Assistant."
+fi
 mkdir -p "$DATA_DIR"
 device_name="${APOLLO_DEVICE_NAME:-desk}"
 
