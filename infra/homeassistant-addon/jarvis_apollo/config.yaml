@@ -5,7 +5,7 @@
 # Para publicar una versión nueva: subí los cambios del servidor a main y subí
 # acá `version`. Home Assistant ofrece "Actualizar" y reconstruye la imagen.
 name: Jarvis Apollo
-version: "0.4.2"
+version: "0.4.3"
 slug: jarvis_apollo
 description: Servidor de voz de Jarvis (Apollo en Bun) para la placa ESP32, en el puerto 8799.
 url: https://github.com/IgChroma/jarvis-apollo/tree/main/infra/homeassistant-addon/jarvis_apollo

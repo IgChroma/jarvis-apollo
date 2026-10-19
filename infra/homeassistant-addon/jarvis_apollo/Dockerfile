@@ -16,13 +16,15 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
 
-# Piper (voz local, sin internet) viene DENTRO de la imagen, con una voz: así el
-# add-on habla aunque no haya Azure ni nada en /share. Misma estructura que ~/piper
-# en la Pi con Raspberry Pi OS: /opt/piper/piper/piper y /opt/piper/voices/*.onnx.
-# Otras voces se bajan solas al arrancar (ver run.sh), así no engordan la imagen.
+# Piper (voz local, sin internet) viene DENTRO de la imagen: así el add-on habla
+# aunque no haya Azure ni nada en /share. Misma estructura que ~/piper en la Pi con
+# Raspberry Pi OS: /opt/piper/piper/piper y /opt/piper/voices/*.onnx.
+# Vienen dos voces: la mexicana (rápida) y la argentina (es_AR-daniela-high, mujer,
+# 114 MB). La argentina se bajaba al arrancar y nunca terminaba: cada reinicio del
+# add-on la cortaba a mitad. Otras voces siguen bajándose solas (ver run.sh).
 ARG PIPER_RELEASE=2023.11.14-2
-ARG PIPER_VOICE=es_MX-ald-medium
-ARG PIPER_VOICE_PATH=es/es_MX/ald/medium
+# ruta-en-rhasspy/piper-voices/nombre, separadas por espacios
+ARG PIPER_VOICES="es/es_MX/ald/medium/es_MX-ald-medium es/es_AR/daniela/high/es_AR-daniela-high"
 RUN set -eu; \
     case "$(uname -m)" in \
       aarch64) piper_arch=aarch64 ;; \
@@ -32,9 +34,12 @@ RUN set -eu; \
     mkdir -p /opt/piper/voices; \
     curl -fsSL "https://github.com/rhasspy/piper/releases/download/${PIPER_RELEASE}/piper_linux_${piper_arch}.tar.gz" \
       | tar -xz -C /opt/piper; \
-    for suffix in .onnx .onnx.json; do \
-      curl -fsSL -o "/opt/piper/voices/${PIPER_VOICE}${suffix}" \
-        "https://huggingface.co/rhasspy/piper-voices/resolve/main/${PIPER_VOICE_PATH}/${PIPER_VOICE}${suffix}"; \
+    for voice_path in ${PIPER_VOICES}; do \
+      voice_name="${voice_path##*/}"; \
+      for suffix in .onnx .onnx.json; do \
+        curl -fsSL -o "/opt/piper/voices/${voice_name}${suffix}" \
+          "https://huggingface.co/rhasspy/piper-voices/resolve/main/${voice_path}${suffix}"; \
+      done; \
     done; \
     test -x /opt/piper/piper/piper
 
