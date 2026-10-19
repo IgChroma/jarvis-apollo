@@ -15,7 +15,10 @@ import type { MemorySqlExecutor } from '@/memory/store';
 // la base por todos lados. Sin sumidero (tests, Worker) no hace nada, y si
 // anotar falla, el turno sigue igual.
 
-export type ApiCostComponent = 'llm' | 'stt' | 'jev' | 'embedding';
+// 'llm_claude': el LLM de conversación por la API de Anthropic. Va aparte porque
+// no lo cobra OpenRouter: el costo lo calcula claude/pricing.ts con `usage`, y
+// el guardián de gasto (claude/budget.ts) suma solo estas filas.
+export type ApiCostComponent = 'llm' | 'llm_claude' | 'stt' | 'jev' | 'embedding';
 
 export type ApiCostEntry = {
   readonly component: ApiCostComponent;

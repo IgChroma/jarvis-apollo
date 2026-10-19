@@ -11,6 +11,7 @@ import {
 } from '@/persona/characters';
 import { extractMoodMark, type DeskMood } from '@/persona/mood';
 import type { RouteResult, TurnRouter } from '@/router/engine';
+import type { RouterReasoningDecision } from '@/router/log';
 import { ROUTER_ESCAPE_TOOL_NAME } from '@/router/intents';
 import {
   UNBACKED_CLAIM_NUDGE,
@@ -68,6 +69,18 @@ export type VoiceAdapters = {
     readonly reasoningEnabled?: boolean;
     // 'required' fuerza una llamada a herramienta (ver turn/claims.ts).
     readonly toolChoice?: 'required';
+    // Lo de abajo lo usa el proveedor Claude (claude/provider.ts); OpenRouter lo
+    // ignora.
+    // Comienzo del primer mensaje `system` que no cambia entre turnos (alma,
+    // sesión, herramientas instaladas): va con punto de caché.
+    readonly systemPromptCacheablePrefix?: string;
+    // La decisión de razonamiento del router, entera (probabilidad incluida):
+    // con ella se elige el nivel de Claude.
+    readonly routeReasoning?: RouterReasoningDecision;
+    readonly userText?: string;
+    // Si el adaptador cae a otro proveedor a mitad de una ronda que ya venía
+    // escribiendo en vivo, avisa para descartar ese texto parcial.
+    readonly onStreamReset?: () => void;
   }) => Promise<{
     readonly text: string;
     readonly toolCallList: readonly OpenRouterToolCall[];
@@ -90,6 +103,9 @@ export type TurnInput = {
   readonly deviceId?: string;
   readonly vectorStore?: VectorStore;
   readonly systemPromptOverride?: string;
+  // Lo que cambia de turno a turno (foco, telemetría) y va DESPUÉS de
+  // systemPromptOverride, para que ese comienzo quede igual y se pueda cachear.
+  readonly systemPromptVolatileNote?: string;
   readonly recentHistoryMessageList?: readonly OpenRouterChatMessage[];
   readonly recallSemanticMemoryContentList?: (
     queryText: string,
@@ -496,14 +512,20 @@ export async function runDeskTurn(input: TurnInput): Promise<TurnOutput> {
   const memoryContentList = [
     ...new Set([...semanticMemoryContentList, ...keywordMemoryContentList]),
   ];
+  // Lo estable va primero y lo que cambia en cada turno (memorias, foco,
+  // telemetría, hora, personaje) después: así el comienzo se puede cachear.
+  const soulSystemPrompt =
+    input.systemPromptOverride === undefined ? buildApolloSoulPrompt(input.speechMode) : undefined;
+  const systemPromptCacheablePrefix = input.systemPromptOverride ?? soulSystemPrompt;
   const systemPromptBase =
-    input.systemPromptOverride === undefined
+    soulSystemPrompt !== undefined
       ? buildOpenRouterSystemPrompt({
-          soulSystemPrompt: buildApolloSoulPrompt(input.speechMode),
+          soulSystemPrompt,
           memoryContentList,
           isFocusActive: input.focusState.active,
         })
-      : input.systemPromptOverride +
+      : (input.systemPromptOverride ?? '') +
+        (input.systemPromptVolatileNote ?? '') +
         buildSemanticMemoryPromptNote(semanticMemoryContentList);
   const systemPrompt =
     systemPromptBase + buildCurrentTimePromptNote(input.nowMilliseconds);
@@ -545,7 +567,8 @@ export async function runDeskTurn(input: TurnInput): Promise<TurnOutput> {
   let llmCallCount = 0;
   let unbackedClaimRetried = false;
   let nextToolChoice: 'required' | undefined;
-  const reasoningEnabled = route?.applied ? route.reasoning?.enabled : undefined;
+  const routeReasoning = route?.applied ? route.reasoning : undefined;
+  const reasoningEnabled = routeReasoning?.enabled;
   const toolExecutionContext = {
     environment: input.environment,
     nowMilliseconds: input.nowMilliseconds,
@@ -632,6 +655,14 @@ export async function runDeskTurn(input: TurnInput): Promise<TurnOutput> {
       toolDefinitionList,
       reasoningEnabled,
       toolChoice,
+      systemPromptCacheablePrefix,
+      routeReasoning,
+      userText,
+      onStreamReset: () => {
+        streamedRoundText = '';
+        streamedDisplayText = '';
+        speculativeSegment = undefined;
+      },
       onTextDelta: (deltaText) => {
         streamedDisplayText += deltaText;
         const liveCaption = streamingCaptionEmitter.nextCaption(

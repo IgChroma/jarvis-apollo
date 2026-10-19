@@ -108,7 +108,9 @@ Lo principal (la lista completa, con el porqué de cada cosa, en
 - **Cuentas:** [OpenRouter](https://openrouter.ai) (obligatoria: LLM, STT, embeddings y
   router con una sola key; unos USD 5 de crédito alcanzan para meses). Opcionales: Azure
   Speech (voz argentina, free tier), Google Cloud (Maps y Calendar), Tavily (búsqueda web),
-  Notion, Gmail.
+  Notion, Gmail, y [Anthropic](https://platform.claude.com) para conversar con Claude (Haiku,
+  Sonnet u Opus 5.5 según el turno, con tope de gasto mensual; ver
+  [customizaciones](docs/customizaciones.md#claude-como-llm-con-tope-de-gasto--claude)).
 
 ### 1. Preparar el repo y los secretos (en tu compu)
 
@@ -197,6 +199,7 @@ Cada una es independiente; sin su key, la función simplemente no aparece.
 | WhatsApp | [`infra/whatsapp/`](infra/whatsapp/): WAHA con motor GOWS, se vincula escaneando un QR |
 | Parlante + Spotify | [`infra/speaker/README.md`](infra/speaker/README.md) |
 | Vencimientos por mail | Contraseña de aplicación de Gmail: `secrets.sh set GMAIL_USER` y `set GMAIL_APP_PASSWORD` |
+| Conversación con Claude | Key en platform.claude.com → Settings → API keys: `secrets.sh set ANTHROPIC_API_KEY`. Usa Claude hasta gastar US$50 por período (`CLAUDE_BUDGET_USD` en `server/config.env`); después OpenRouter |
 | Fútbol, pádel | Interruptores en `server/config.env` (vienen apagados) |
 
 Después de cargar secretos nuevos: `scripts/push-secrets.sh all --restart`.
@@ -208,7 +211,9 @@ Centavos por mes para un uso personal: con las tarifas públicas de OpenRouter, 
 Speech entra en el free tier, y Maps y Calendar en el uso gratuito de Google para un solo
 usuario (verificá los límites vigentes de tu cuenta). Para seguir tu propio gasto: cada llamada
 guarda su costo exacto en la base (`api_costs`), y [`infra/costs/cost-tracker.py`](infra/costs/)
-registra cada hora el consumo de tu key.
+registra cada hora el consumo de tu key. Con Claude, cada respuesta se cotiza con sus tokens y
+los precios de lista (fila `llm_claude` en `api_costs`); un turno con Haiku 5.5 anda en el
+orden de una décima de centavo, uno con Sonnet u Opus 5.5 en el de uno o pocos centavos.
 
 ## Tests
 

@@ -38,6 +38,7 @@ import { createBunJobQueue } from '@/platform/bun/queue';
 import { createBunScheduler } from '@/platform/bun/scheduler';
 import { startRouterLearning } from '@/router/learn';
 import { createSqliteApiCostSink, setApiCostSink } from '@/costs/ledger';
+import { resolveClaudeProvider } from '@/claude/provider';
 import { createBunSqliteExecutor, createBunSqliteSqlProvider } from '@/platform/bun/sql';
 import { createSqliteVectorStore } from '@/platform/bun/vector';
 import { executeApolloQueueJob } from '@/queues/consume';
@@ -180,6 +181,13 @@ export async function startApolloHost(
 
   // Costo real de cada llamada a OpenRouter, por componente (src/costs).
   setApiCostSink(createSqliteApiCostSink(sqlExecutor));
+
+  // Claude (claude/provider.ts): se arma acá para que el log de arranque diga
+  // si está prendido y cuánto va gastado en el período. Los turnos reusan esta
+  // misma instancia (una por base).
+  if (process.env.MOCK_VOICE !== '1') {
+    resolveClaudeProvider(sqlExecutor, processEnvironment)?.logSpend('arranque');
+  }
 
   // Router de intenciones: aprende una vez por día de cómo terminaron sus
   // decisiones (umbrales por intención y clasificador local). Ver src/router.

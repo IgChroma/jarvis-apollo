@@ -100,6 +100,41 @@ qué herramientas ve el modelo (ver la tabla de niveles en
   de la memoria vieja.
 - Modo `shadow` para medir sin aplicar; `ROUTER_MODE=off` lo apaga.
 
+### Claude como LLM, con tope de gasto — `claude/`
+
+Opcional: con `ANTHROPIC_API_KEY` la conversación va a la API de Anthropic (SDK oficial
+`@anthropic-ai/sdk`, por streaming, así la voz arranca con la primera oración); sin key, o con
+`CLAUDE_ENABLED=off`, todo sigue por OpenRouter. STT, embeddings y Jev no cambian.
+
+- **Tres niveles** (`claude/tier.ts`), con la misma señal de razonamiento del router (incluido
+  su A/B, que ahora compara Sonnet contra Haiku): `claude-haiku-5-5` por defecto, esfuerzo `low`;
+  `claude-sonnet-5-5` si el router decide razonar, esfuerzo `low`; `claude-opus-5-5` si Jev da
+  ≥ 0,9 de "requiere razonar" (`CLAUDE_HARD_REASONING_THRESHOLD`) o el usuario lo pide ("pensalo
+  bien", "pensá a fondo", "es una pregunta difícil"; `CLAUDE_HARD_PHRASES`), esfuerzo `medium`:
+  Opus 5.5 no deja apagar el razonamiento y `medium` es su punto de partida; `high` alarga el
+  turno para una respuesta que igual se dice en dos oraciones. Cada turno deja
+  `apollo_claude_nivel` con el nivel y el motivo (sin el texto).
+- **Una decisión por turno**: nivel y proveedor se eligen en la primera ronda y no cambian a mitad
+  (el razonamiento de una ronda solo lo lee el mismo modelo). Si una ronda falla (red, 5xx, 429,
+  rechazo sin fallback, corte sin texto), esa ronda y el resto del turno van por OpenRouter
+  (`apollo_claude_fallback_openrouter`); el texto en vivo que Claude ya había escrito se descarta.
+- **Rechazos**: Sonnet y Opus van con el fallback del lado del servidor
+  (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`); Haiku no lo tiene y su rechazo
+  cae directo en OpenRouter.
+- **Caché de prompt**: lo estable (alma, sesión, herramientas instaladas) va primero y con punto
+  de caché; foco, telemetría, memorias, hora y personaje van después. Además, caché automática de
+  la cola, para que la segunda ronda de un turno con herramientas lea la primera de caché.
+- **`tool_choice: required`** (`turn/claims.ts`) no se manda a Claude (Opus 5.5 y Sonnet 5.5 lo
+  rechazan con un 400): la nota de sistema que acompaña la repetición ya nombra la herramienta.
+- **Tope de gasto** (`claude/budget.ts`, `claude/pricing.ts`): la cuenta no tiene Admin API, así
+  que cada respuesta se cotiza con su `usage` (entrada, escritura y lectura de caché, salida) y
+  la tabla de precios de lista, y se anota en `api_costs` como `llm_claude`. Usa Claude hasta
+  gastar `CLAUDE_BUDGET_USD` (50) en el período (del día `CLAUDE_BUDGET_CYCLE_DAY`, 12, a las
+  00:00 de Buenos Aires, al mismo día del mes siguiente); después, OpenRouter hasta el período
+  siguiente. `CLAUDE_MIN_REMAINING_PERCENT` (0) deja un margen. La suma se relee cada 5 minutos y
+  al cambiar de período; `apollo_claude_gasto` la loguea al arrancar, cada hora y cada vez que
+  cambia el nivel o el proveedor.
+
 ### "No confirmes lo que no hiciste" — `turn/claims.ts`
 
 El modelo a veces decía "listo, te aviso mañana" sin haber programado nada, o "esta semana no
@@ -233,7 +268,8 @@ no daba abasto con `full_refresh` y parpadeaba).
 ## Operación
 
 - **Costos** (`costs/ledger.ts`): cada llamada a OpenRouter guarda su `usage.cost` exacto en
-  `api_costs`. Más un tracker horario del consumo de la key (`infra/costs/cost-tracker.py`).
+  `api_costs`, y cada llamada a Claude su costo calculado (`llm_claude`, ver arriba). Más un
+  tracker horario del consumo de la key de OpenRouter (`infra/costs/cost-tracker.py`).
 - **Latencia medida por etapa** (`turn/run.ts`): `apollo_turn_timings` con STT, memoria,
   router, cada llamada al LLM, cada herramienta por nombre, TTS, y un `sin_medir` que si crece
   avisa que hay una etapa sin instrumentar.

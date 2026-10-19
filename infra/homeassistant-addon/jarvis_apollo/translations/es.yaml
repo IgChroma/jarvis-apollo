@@ -7,7 +7,7 @@ configuration:
     description: Para la consola de administración de Apollo. Obligatorio.
   openrouter_api_key:
     name: Key de OpenRouter (OPENROUTER_API_KEY)
-    description: LLM, transcripción, embeddings y router. Obligatoria.
+    description: Transcripción, embeddings, router y el LLM cuando no se usa Claude. Obligatoria.
   device_name:
     name: Nombre del dispositivo
     description: Tiene que coincidir con el del firmware (jarvis). También es el nombre de la base (jarvis.sqlite).
@@ -17,6 +17,28 @@ configuration:
     name: Modelo de transcripción
   openrouter_embedding_model:
     name: Modelo de embeddings
+  anthropic_api_key:
+    name: Key de Anthropic (ANTHROPIC_API_KEY)
+    description: Opcional. Con ella la conversación va por Claude; sin ella, todo por OpenRouter. Se crea en platform.claude.com → Settings → API keys.
+  claude_enabled:
+    name: Usar Claude
+    description: Prendido por defecto cuando hay key. Apagado = todo por OpenRouter.
+  claude_model_fast:
+    name: Claude para la charla (rápido)
+  claude_model_reasoning:
+    name: Claude cuando hay que razonar
+  claude_model_hard:
+    name: Claude para lo muy difícil
+    description: Cuando Jev está muy seguro de que hay que razonar, o le pedís "pensalo bien".
+  claude_budget_usd:
+    name: Presupuesto mensual de Claude (USD)
+    description: Usa Claude hasta gastar este monto en el período; después OpenRouter hasta que empiece el período siguiente.
+  claude_budget_cycle_day:
+    name: Día en que arranca el período
+    description: Del día X a las 00:00 al día X del mes siguiente (si el mes no lo tiene, el último día).
+  claude_min_remaining_percent:
+    name: Margen sin usar (%)
+    description: 0 = se usa el presupuesto entero. Con 10, pasa a OpenRouter cuando queda el 10 %.
   tts_provider:
     name: Voz
     description: azure (es-AR, necesita la key de Azure), piper (local, en /share/piper) o elevenlabs.

@@ -138,6 +138,49 @@ pone a cada entidad desde su ventana de configuración (⚙ → **Etiquetas**):
   (el clima vuelve a salir de open-meteo, sin mín./máx.).
 - El resumen del **Registro** al arrancar dice `Home Assistant: sí` cuando el token está.
 
+## Claude (opcional, desde la versión 0.4.0)
+
+Con una key de Anthropic, la **conversación** pasa a Claude; sin ella todo sigue por OpenRouter
+como antes. La **transcripción (Whisper), los embeddings y el router Jev siguen siempre en
+OpenRouter**, así que `openrouter_api_key` sigue siendo obligatoria.
+
+1. Creá la key en [platform.claude.com](https://platform.claude.com) → **Settings → API keys**
+   (cargale crédito en **Billing**).
+2. Pegala en `anthropic_api_key` (está en las opciones opcionales) y **Guardar → Reiniciar**.
+   Con key, `claude_enabled` viene prendido; apagalo para volver a OpenRouter sin borrar la key.
+3. En el **Registro** tiene que aparecer
+   `Claude: sí (usa Claude hasta gastar US$50 en el período; después OpenRouter)` y, ya con
+   Apollo arrancado, una línea `apollo_claude_gasto` con lo gastado en el período.
+
+**Tres niveles por turno** (lo decide el router con la señal que ya usaba para razonar):
+
+| Nivel | Modelo (opción) | Cuándo |
+|---|---|---|
+| rápido | `claude_model_fast` = `claude-haiku-5-5` | la charla de todos los días (por defecto) |
+| razonar | `claude_model_reasoning` = `claude-sonnet-5-5` | Jev dice que hay que razonar (fechas, cuentas, varios pasos) |
+| difícil | `claude_model_hard` = `claude-opus-5-5` | Jev está muy seguro (≥ 0,9) de que hay que razonar, o decís "pensalo bien", "pensá a fondo", "es una pregunta difícil"… |
+
+Si Claude falla en un turno (red, saturado, rechazo), ese turno contesta OpenRouter sin que se
+note más que en el log (`apollo_claude_fallback_openrouter`).
+
+**Presupuesto**: `claude_budget_usd` (50 por defecto) es lo máximo a gastar en Claude por
+período. El período va del día `claude_budget_cycle_day` (12 por defecto) a las 00:00, hora de
+Buenos Aires, al mismo día del mes siguiente (si el mes no tiene ese día, el último). **Usa Claude
+hasta gastar US$50 en el período; después OpenRouter** hasta que arranca el período siguiente.
+Un turno que empieza por debajo del límite termina en Claude aunque lo cruce; el cambio se nota
+en el turno siguiente. `claude_min_remaining_percent` (0 por defecto) deja un margen sin usar:
+con 10, pasa a OpenRouter al llegar a US$45.
+
+El gasto lo calcula Jarvis con los tokens de cada respuesta y los precios de lista (la cuenta no
+tiene la API de administración de Anthropic para preguntarlo), y queda en la tabla `api_costs`
+(componente `llm_claude`). Es una estimación: el número oficial es el de **Billing** en
+platform.claude.com. Con el uso de una persona, un turno con Haiku cuesta del orden de una
+décima de centavo de dólar.
+
+Variables avanzadas por `extra_env`: `CLAUDE_EFFORT_FAST` / `_REASONING` / `_HARD` (esfuerzo:
+`low`, `medium`, `high`…; por defecto low, low y medium), `CLAUDE_HARD_REASONING_THRESHOLD`
+(0,9), `CLAUDE_HARD_PHRASES` (frases separadas por coma) y `CLAUDE_BUDGET_TIMEZONE`.
+
 ## Integraciones opcionales
 
 Todas vienen apagadas y sin ellas el add-on arranca igual.

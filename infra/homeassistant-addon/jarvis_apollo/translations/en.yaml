@@ -8,6 +8,20 @@ configuration:
   openrouter_api_key:
     name: OpenRouter key (OPENROUTER_API_KEY)
     description: LLM, speech-to-text, embeddings and router. Required.
+  anthropic_api_key:
+    name: Anthropic key (ANTHROPIC_API_KEY)
+    description: Optional. With it the conversation runs on Claude; without it, everything stays on OpenRouter. Create it at platform.claude.com → Settings → API keys.
+  claude_enabled:
+    name: Use Claude
+    description: On by default when there is a key. Off = everything on OpenRouter.
+  claude_budget_usd:
+    name: Monthly Claude budget (USD)
+    description: Uses Claude until this amount is spent in the period, then OpenRouter until the next period starts.
+  claude_budget_cycle_day:
+    name: Period start day
+  claude_min_remaining_percent:
+    name: Unused margin (%)
+    description: 0 = use the whole budget.
   device_name:
     name: Device name
     description: Must match the firmware (jarvis). Also names the database file.

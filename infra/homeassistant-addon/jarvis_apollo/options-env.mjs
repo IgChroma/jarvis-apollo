@@ -19,6 +19,13 @@ const TEXT_OPTIONS = {
   openrouter_model: 'OPENROUTER_MODEL',
   openrouter_stt_model: 'OPENROUTER_STT_MODEL',
   openrouter_embedding_model: 'OPENROUTER_EMBEDDING_MODEL',
+  anthropic_api_key: 'ANTHROPIC_API_KEY',
+  claude_model_fast: 'CLAUDE_MODEL_FAST',
+  claude_model_reasoning: 'CLAUDE_MODEL_REASONING',
+  claude_model_hard: 'CLAUDE_MODEL_HARD',
+  claude_budget_usd: 'CLAUDE_BUDGET_USD',
+  claude_budget_cycle_day: 'CLAUDE_BUDGET_CYCLE_DAY',
+  claude_min_remaining_percent: 'CLAUDE_MIN_REMAINING_PERCENT',
   tts_provider: 'TTS_PROVIDER',
   azure_speech_key: 'AZURE_SPEECH_KEY',
   azure_speech_region: 'AZURE_SPEECH_REGION',
@@ -51,6 +58,7 @@ const TEXT_OPTIONS = {
 
 // Interruptores: true/false de la UI → on/off, como en server/config.env.
 const SWITCH_OPTIONS = {
+  claude_enabled: 'CLAUDE_ENABLED',
   conversation_mode: 'CONVERSATION_MODE',
   personajes: 'PERSONAJES',
   departure_alerts: 'DEPARTURE_ALERTS',
@@ -141,9 +149,27 @@ process.stdout.write(`export JARVIS_ADDON_LOG_TO_FILE=${options.log_to_file === 
 // Resumen para el log del add-on: qué está prendido, sin valores.
 const has = (name) => !isBlank(environment.get(name));
 const feature = (label, enabled) => `${label}: ${enabled ? 'sí' : 'no'}`;
+// Claude: misma regla que el servidor (claude/config.ts). Sin valores, solo el
+// presupuesto, que no es secreto.
+const claudeSwitchedOff = ['off', 'false', '0', 'no'].includes(
+  String(environment.get('CLAUDE_ENABLED') ?? '').trim().toLowerCase(),
+);
+const claudeOn = has('ANTHROPIC_API_KEY') && !claudeSwitchedOff;
+const readSummaryNumber = (name, fallback) => {
+  const value = Number(environment.get(name));
+  return isBlank(environment.get(name)) || !Number.isFinite(value) ? fallback : value;
+};
+const claudeBudget = readSummaryNumber('CLAUDE_BUDGET_USD', 50);
+const claudeMargin = readSummaryNumber('CLAUDE_MIN_REMAINING_PERCENT', 0);
+const claudeLimit = Math.round(claudeBudget * (1 - claudeMargin / 100) * 100) / 100;
+const claudeSummary = claudeOn
+  ? `Claude: sí (usa Claude hasta gastar US$${claudeLimit} en el período` +
+    `${claudeMargin > 0 ? ` de US$${claudeBudget}, margen ${claudeMargin} %` : ''}; después OpenRouter)`
+  : `Claude: no${has('ANTHROPIC_API_KEY') ? ' (apagado con claude_enabled)' : ''} (todo por OpenRouter)`;
 console.error(
   [
     `Dispositivo: ${environment.get('APOLLO_DEVICE_NAME') ?? 'desk'}`,
+    claudeSummary,
     `Voz: ${environment.get('TTS_PROVIDER') ?? 'elevenlabs'}${environment.get('TTS_PROVIDER') === 'azure' && !has('AZURE_SPEECH_KEY') ? ' (sin AZURE_SPEECH_KEY: usa Piper)' : ''}`,
     feature('Búsqueda web', has('TAVILY_API_KEY')),
     feature('Google Maps', has('GOOGLE_MAPS_API_KEY')),

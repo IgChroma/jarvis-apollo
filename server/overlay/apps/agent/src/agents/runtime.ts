@@ -14,6 +14,7 @@ import { embedTextWithOpenRouter, recallSemanticMemoryContent } from '@/memory/v
 import type { BlobStore } from '@/platform/blob';
 import type { VectorStore } from '@/platform/vector';
 import { resolveDeskSpeechMode } from '@/persona/catalog';
+import { resolveClaudeProvider } from '@/claude/provider';
 import { createTurnRouter, resolveRouterMode, type TurnRouter } from '@/router/engine';
 import { resolveDeskFaceEmotion } from '@/persona/face';
 import {
@@ -202,6 +203,33 @@ export async function executeApolloTurn(
     [...toolDefinitionMap.keys()].filter((toolName) => isNamespacedMcpToolName(toolName)),
   );
 
+  const openRouterLlm: VoiceAdapters['llm'] = async ({
+    messageList,
+    toolDefinitionList,
+    onTextDelta,
+    reasoningEnabled,
+    toolChoice,
+  }) => {
+    const baseChatRequest = {
+      openRouterApiKey: dependencies.environment.OPENROUTER_API_KEY,
+      modelId: dependencies.environment.OPENROUTER_MODEL,
+      messageList,
+      toolDefinitionList,
+      reasoningEnabled,
+      toolChoice,
+    };
+    return chatWithOpenRouter(
+      onTextDelta === undefined
+        ? baseChatRequest
+        : { ...baseChatRequest, onTextDelta },
+    );
+  };
+  // Claude (claude/provider.ts) si hay ANTHROPIC_API_KEY y no está apagado; una
+  // instancia por turno, con OpenRouter de red para ese mismo turno.
+  const claudeProvider = isMockVoice
+    ? undefined
+    : resolveClaudeProvider(dependencies.sqlExecutor);
+
   const voiceAdapters: VoiceAdapters = isMockVoice
     ? {
         stt: async () => turnPart.text ?? 'hola',
@@ -222,21 +250,10 @@ export async function executeApolloTurn(
             openRouterApiKey: dependencies.environment.OPENROUTER_API_KEY,
             modelId: dependencies.environment.OPENROUTER_STT_MODEL,
           }),
-        llm: async ({ messageList, toolDefinitionList, onTextDelta, reasoningEnabled, toolChoice }) => {
-          const baseChatRequest = {
-            openRouterApiKey: dependencies.environment.OPENROUTER_API_KEY,
-            modelId: dependencies.environment.OPENROUTER_MODEL,
-            messageList,
-            toolDefinitionList,
-            reasoningEnabled,
-            toolChoice,
-          };
-          return chatWithOpenRouter(
-            onTextDelta === undefined
-              ? baseChatRequest
-              : { ...baseChatRequest, onTextDelta },
-          );
-        },
+        llm:
+          claudeProvider === undefined
+            ? openRouterLlm
+            : claudeProvider.createTurnLlm(openRouterLlm),
         tts: async (text, voiceId) =>
           synthesizeApolloSpeech({
             environment: dependencies.environment,
@@ -259,7 +276,9 @@ export async function executeApolloTurn(
     nowMilliseconds,
     deviceId: dependencies.deviceId,
     vectorStore: dependencies.vectorStore,
-    systemPromptOverride: `${sessionSystemPrompt}${focusNote}${telemetryNote}${installedToolNote}`,
+    // Lo estable primero (cacheable), lo que cambia de turno a turno después.
+    systemPromptOverride: `${sessionSystemPrompt}${installedToolNote}`,
+    systemPromptVolatileNote: `${focusNote}${telemetryNote}`,
     recentHistoryMessageList,
     effects: dependencies.effects,
     onThinkingCaption: async (caption, accentColor) => {

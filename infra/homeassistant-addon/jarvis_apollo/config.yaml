@@ -5,7 +5,7 @@
 # Para publicar una versión nueva: subí los cambios del servidor a main y subí
 # acá `version`. Home Assistant ofrece "Actualizar" y reconstruye la imagen.
 name: Jarvis Apollo
-version: "0.3.0"
+version: "0.4.0"
 slug: jarvis_apollo
 description: Servidor de voz de Jarvis (Apollo en Bun) para la placa ESP32, en el puerto 8799.
 url: https://github.com/IgChroma/jarvis-apollo/tree/main/infra/homeassistant-addon/jarvis_apollo
@@ -38,6 +38,13 @@ options:
   openrouter_model: deepseek/deepseek-v4.1-flash
   openrouter_stt_model: openai/whisper-large-v3-turbo
   openrouter_embedding_model: openai/text-embedding-3-small
+  claude_enabled: true
+  claude_model_fast: claude-haiku-5-5
+  claude_model_reasoning: claude-sonnet-5-5
+  claude_model_hard: claude-opus-5-5
+  claude_budget_usd: 50
+  claude_budget_cycle_day: 12
+  claude_min_remaining_percent: 0
   tts_provider: piper
   azure_speech_region: brazilsouth
   azure_speech_voice: es-AR-TomasNeural
@@ -64,6 +71,15 @@ schema:
   openrouter_model: str
   openrouter_stt_model: str
   openrouter_embedding_model: str
+  # --- Claude (opcional): sin key, todo por OpenRouter como siempre
+  anthropic_api_key: password?
+  claude_enabled: bool
+  claude_model_fast: str
+  claude_model_reasoning: str
+  claude_model_hard: str
+  claude_budget_usd: float(0,)
+  claude_budget_cycle_day: int(1,31)
+  claude_min_remaining_percent: float(0,100)
   # --- Voz
   tts_provider: list(azure|piper|elevenlabs)
   azure_speech_key: password?

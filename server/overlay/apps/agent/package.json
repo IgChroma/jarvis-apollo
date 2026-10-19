@@ -12,6 +12,7 @@
     "test:coverage": "bun test --coverage"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0",
     "@cloudflare/sandbox": "^0.12.4",
     "@modelcontextprotocol/sdk": "1.30.0",
     "agents": "0.20.1",

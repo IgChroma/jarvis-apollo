@@ -36,7 +36,7 @@ flowchart TB
   TURN --- NOTION
   TURN --- WAHA
   TURN -- "HTTP :8790" --- SPK
-  TURN --> EXT["OpenRouter: Whisper turbo · Jev · DeepSeek v4.1 flash · embeddings<br/>Azure Speech es-AR · Google Maps REST · Tavily · open-meteo · dolarapi"]
+  TURN --> EXT["OpenRouter: Whisper turbo · Jev · DeepSeek v4.1 flash · embeddings<br/>Anthropic (opcional): Claude Haiku/Sonnet/Opus 5.5<br/>Azure Speech es-AR · Google Maps REST · Tavily · open-meteo · dolarapi"]
 ```
 
 ## La placa (firmware)
@@ -98,7 +98,10 @@ contenedor con un volumen (`/data`). En la Pi de 2 GB todo el sistema queda en ~
 
    Si al LLM le falta algo, llama a `usar_todas_las_herramientas` y la ronda siguiente tiene todas.
 5. **LLM** — `deepseek/deepseek-v4.1-flash`, con `reasoning` apagado salvo que Jev diga que hace
-   falta (razonar sumaba ~2 s por ronda).
+   falta (razonar sumaba ~2 s por ronda). Con `ANTHROPIC_API_KEY`, Claude en su lugar: Haiku 5.5
+   por defecto, Sonnet 5.5 si Jev dice que hay que razonar, Opus 5.5 si está muy seguro o le
+   pedís "pensalo bien"; hasta gastar el presupuesto del período (US$50 por defecto) y con
+   DeepSeek de red si Claude falla en un turno ([customizaciones](customizaciones.md#claude-como-llm-con-tope-de-gasto--claude)).
 6. **Control de afirmaciones** (`turn/claims.ts`) — si el pedido era de acción y el modelo
    confirma sin haber llamado a ninguna herramienta, o contesta un dato sin consultarlo, la
    respuesta no se dice: se repite la ronda con `tool_choice: required`.
