@@ -141,8 +141,9 @@ private:
 
     void InitializeTouch() {
         esp_lcd_touch_config_t touch_config = {
-            .x_max = DISPLAY_WIDTH,
-            .y_max = DISPLAY_HEIGHT,
+            // Máximos inclusive: el espejo calcula `max - x`.
+            .x_max = DISPLAY_WIDTH - 1,
+            .y_max = DISPLAY_HEIGHT - 1,
             .rst_gpio_num = GPIO_NUM_NC,
             .int_gpio_num = GPIO_NUM_NC,
             .levels = {
@@ -151,8 +152,8 @@ private:
             },
             .flags = {
                 .swap_xy = 0,
-                .mirror_x = 0,
-                .mirror_y = 0,
+                .mirror_x = TOUCH_MIRROR_X,
+                .mirror_y = TOUCH_MIRROR_Y,
             },
         };
         esp_lcd_panel_io_i2c_config_t touch_io_config = {

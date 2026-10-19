@@ -47,6 +47,13 @@
 #define DISPLAY_MIRROR_X false
 #define DISPLAY_MIRROR_Y false
 
+// El GT911 del 7B tiene los ejes al revés que el panel (girado 180°): sin el
+// espejo, tocar la pestaña de arriba llegaba como un toque abajo y del lado
+// contrario (medido en la placa: Casa en (600,21) llegaba como (424,579)).
+// ESPHome también lo espeja. xiaozhi no lo notaba porque no toca nada fino.
+#define TOUCH_MIRROR_X 1
+#define TOUCH_MIRROR_Y 1
+
 #define DISPLAY_OFFSET_X 0
 #define DISPLAY_OFFSET_Y 0
 

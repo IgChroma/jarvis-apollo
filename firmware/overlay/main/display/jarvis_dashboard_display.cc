@@ -78,7 +78,9 @@ constexpr int kConversationTextLineCount = 2;
 // el dedo. Los objetivos chicos se agrandan al tocar, no al dibujar.
 constexpr int kClimateButtonSize = 44;
 constexpr int kClimateButtonHitMargin = 8;
-constexpr int kTabHitMargin = 10;
+// Zona de toque de las pestañas: a los costados y hacia abajo de la barra.
+constexpr int kTabHitMargin = 28;
+constexpr int kTabHitMarginBelow = 24;
 constexpr int kFallbackLineHeight = 23;
 
 // Aspecto de un mosaico de Casa; se cachea para no tocar estilos sin cambio.
@@ -788,12 +790,31 @@ JarvisDashboardDisplay::TouchTarget JarvisDashboardDisplay::HitTest(int x, int y
     if (reminder_overlay_ != nullptr && !lv_obj_has_flag(reminder_overlay_, LV_OBJ_FLAG_HIDDEN)) {
         return target;
     }
+    // Las pestañas son chicas (el texto y poco más, en una barra de 34 px): con
+    // 10 px de margen un dedo las erraba y el toque terminaba como tap común
+    // (se oía el error de "sin servidor" y la vista no cambiaba). La zona de
+    // cada una se estira a lo ancho y llega hasta el borde de arriba.
+    // Si las zonas estiradas de dos pestañas se pisan, gana la más cercana.
+    int best_distance = 1 << 30;
     for (int view = 0; view < kViewCount; view++) {
-        if (IsInside(tab_label_list_[view], x, y, kTabHitMargin)) {
-            target.kind = TouchTargetKind::kTab;
-            target.index = view;
-            return target;
+        lv_obj_t* tab = tab_label_list_[view];
+        if (tab == nullptr) {
+            continue;
         }
+        lv_area_t area;
+        lv_obj_get_coords(tab, &area);
+        if (x >= area.x1 - kTabHitMargin && x <= area.x2 + kTabHitMargin && y >= 0 &&
+            y <= area.y2 + kTabHitMarginBelow) {
+            const int distance = abs(x - (area.x1 + area.x2) / 2);
+            if (distance < best_distance) {
+                best_distance = distance;
+                target.kind = TouchTargetKind::kTab;
+                target.index = view;
+            }
+        }
+    }
+    if (target.kind == TouchTargetKind::kTab) {
+        return target;
     }
 
     if (current_view_ == View::kOverview) {
@@ -905,10 +926,12 @@ void JarvisDashboardDisplay::SetTalkButtonsListening(bool listening) {
     }
     talk_buttons_listening_ = listening;
     if (listening) {
-        // Hablar encendido: el microfono esta abierto y otro toque da mas tiempo.
+        // Hablar encendido: el microfono esta abierto (otro toque da mas tiempo).
+        // El texto dice lo que pasa, no lo que hace el boton: asi se lee de un
+        // vistazo que la placa esta escuchando.
         lv_obj_set_style_bg_color(talk_button_, lv_color_hex(kColorTurquoise), 0);
         lv_obj_set_style_text_color(talk_button_label_, lv_color_hex(kColorScreen), 0);
-        lv_label_set_text(talk_button_label_, "+ tiempo");
+        lv_label_set_text(talk_button_label_, "Escuchando...");
         lv_obj_set_style_opa(send_button_, LV_OPA_COVER, 0);
     } else {
         lv_obj_set_style_bg_color(talk_button_, lv_color_hex(kColorTile), 0);
@@ -1038,6 +1061,13 @@ void JarvisDashboardDisplay::SetupUI() {
     // tienen arrancan en negro con la placa perfectamente sana.
     lv_obj_update_layout(container_);
     lv_obj_invalidate(lv_screen_active());
+
+    for (int view = 0; view < kViewCount; view++) {
+        lv_area_t tab_area;
+        lv_obj_get_coords(tab_label_list_[view], &tab_area);
+        ESP_LOGI(TAG, "pestaña %s en (%d,%d)-(%d,%d)", kViewTabTextList[view], (int)tab_area.x1,
+                 (int)tab_area.y1, (int)tab_area.x2, (int)tab_area.y2);
+    }
 
     lv_obj_t* side_column = lv_obj_get_child(overview_view_, 2);
     lv_obj_t* calendar_tile = lv_obj_get_parent(today_event_area_);

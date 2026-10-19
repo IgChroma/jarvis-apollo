@@ -74,10 +74,32 @@ const defaultLog: LogFunction = (payload) => {
   console.log(JSON.stringify(payload));
 };
 
+// Los 400 de Anthropic dicen qué campo del pedido rechazaron ("messages.3.content:
+// …", "tools.12.input_schema: …"): sin eso un 400 no se puede arreglar. Se guarda
+// solo ese texto, recortado, y sin lo que venga entre comillas (puede citar un
+// pedazo del pedido, es decir, de la conversación).
+const MAX_API_ERROR_DETAIL_LENGTH = 300;
+
+function describeApiErrorDetail(error: InstanceType<typeof Anthropic.APIError>): string | undefined {
+  const body = error.error as { error?: { message?: unknown; type?: unknown } } | undefined;
+  const message = typeof body?.error?.message === 'string' ? body.error.message : undefined;
+  if (message === undefined) {
+    return undefined;
+  }
+  return message
+    .replace(/"[^"]*"/g, '"…"')
+    .replace(/'[^']*'/g, "'…'")
+    .slice(0, MAX_API_ERROR_DETAIL_LENGTH);
+}
+
 function describeError(error: unknown): Record<string, unknown> {
-  // Solo clase y estado: nada de mensajes que puedan arrastrar el pedido.
   if (error instanceof Anthropic.APIError) {
-    return { error: error.constructor.name, status: error.status ?? null };
+    const detail = describeApiErrorDetail(error);
+    return {
+      error: error.constructor.name,
+      status: error.status ?? null,
+      ...(detail !== undefined ? { detalle: detail } : {}),
+    };
   }
   return { error: error instanceof Error ? error.name : 'desconocido' };
 }

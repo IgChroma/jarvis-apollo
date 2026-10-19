@@ -31,3 +31,6 @@ node_modules/
 # Python
 __pycache__/
 *.pyc
+
+# Notas personales (IPs, puertos, decisiones de la instalación propia): no se publican
+docs/personal/

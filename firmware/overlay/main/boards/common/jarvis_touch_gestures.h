@@ -139,6 +139,10 @@ private:
                 start_y = last_y = y;
                 press_started_ms = now_ms;
                 press_target = dashboard != nullptr ? dashboard->HitTest(x, y) : TouchTarget{};
+                // Una línea por pulsación (no por sondeo): deja ver en el log si
+                // las coordenadas del táctil coinciden con la pantalla.
+                ESP_LOGI(kTag, "Press (%d,%d) target %d/%d", x, y, (int)press_target.kind,
+                         press_target.index);
             } else if (is_pressed) {
                 last_x = x;
                 last_y = y;
