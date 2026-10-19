@@ -1,0 +1,33 @@
+configuration:
+  device_shared_secret:
+    name: Board secret (DEVICE_SHARED_SECRET)
+    description: The same value compiled into the board firmware. Required.
+  dashboard_shared_secret:
+    name: Console secret (DASHBOARD_SHARED_SECRET)
+    description: For the Apollo admin console. Required.
+  openrouter_api_key:
+    name: OpenRouter key (OPENROUTER_API_KEY)
+    description: LLM, speech-to-text, embeddings and router. Required.
+  device_name:
+    name: Device name
+    description: Must match the firmware (jarvis). Also names the database file.
+  tts_provider:
+    name: Voice
+    description: azure (needs the Azure key), piper (local, in /share/piper) or elevenlabs.
+  piper_directory:
+    name: Piper folder
+    description: Contains piper/ (piper_linux_aarch64) and voices/. Empty = no Piper.
+  waha_api_key:
+    name: WAHA key
+    description: WhatsApp stays off without it.
+  speaker_url:
+    name: External speaker URL
+    description: The jarvis-speaker service (infra/speaker). Empty = off.
+  log_to_file:
+    name: Keep logs in /share
+    description: /share/jarvis-apollo/logs/apollo.log survives updates.
+  extra_env:
+    name: Extra variables
+    description: Other Apollo variables without their own option (name and value).
+network:
+  8799/tcp: Apollo API and WebSocket (the board and the console connect here)

@@ -1,0 +1,7 @@
+# Repositorio de add-ons (apps) de Home Assistant. Permite instalar el servidor de
+# Jarvis en Home Assistant OS agregando la URL de este repo en la tienda:
+#   Configuración → Complementos → Tienda → ⋮ → Repositorios → https://github.com/IgChroma/jarvis-apollo
+# El add-on vive en infra/homeassistant-addon/jarvis_apollo/ (ver su DOCS.md).
+name: Jarvis Apollo
+url: https://github.com/IgChroma/jarvis-apollo
+maintainer: IgChroma

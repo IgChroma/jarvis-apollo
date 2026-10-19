@@ -1,0 +1,119 @@
+configuration:
+  device_shared_secret:
+    name: Secreto de la placa (DEVICE_SHARED_SECRET)
+    description: El mismo que tiene compilado el firmware de la placa. Obligatorio.
+  dashboard_shared_secret:
+    name: Secreto de la consola (DASHBOARD_SHARED_SECRET)
+    description: Para la consola de administración de Apollo. Obligatorio.
+  openrouter_api_key:
+    name: Key de OpenRouter (OPENROUTER_API_KEY)
+    description: LLM, transcripción, embeddings y router. Obligatoria.
+  device_name:
+    name: Nombre del dispositivo
+    description: Tiene que coincidir con el del firmware (jarvis). También es el nombre de la base (jarvis.sqlite).
+  openrouter_model:
+    name: Modelo de conversación
+  openrouter_stt_model:
+    name: Modelo de transcripción
+  openrouter_embedding_model:
+    name: Modelo de embeddings
+  tts_provider:
+    name: Voz
+    description: azure (es-AR, necesita la key de Azure), piper (local, en /share/piper) o elevenlabs.
+  azure_speech_key:
+    name: Key de Azure Speech
+    description: Sin esta key, la voz azure cae en Piper.
+  azure_speech_region:
+    name: Región de Azure Speech
+  azure_speech_voice:
+    name: Voz de Azure
+  elevenlabs_api_key:
+    name: Key de ElevenLabs
+  piper_directory:
+    name: Carpeta de Piper
+    description: Con piper/ (binario piper_linux_aarch64) y voices/ adentro. Vacío = sin Piper.
+  piper_voice:
+    name: Voz de Piper
+    description: Archivo .onnx dentro de voices/.
+  conversation_mode:
+    name: Modo conversación
+    description: El micrófono se reabre después de cada respuesta.
+  router_mode:
+    name: Router de intenciones
+    description: on, shadow (decide y anota, usa todas las herramientas) u off.
+  router_reasoning_explore:
+    name: Exploración del razonamiento
+    description: Fracción de turnos (0 a 1) en que se invierte la decisión de razonar para aprender.
+  personajes:
+    name: Personajes por tono
+  departure_alerts:
+    name: Aviso de "a qué hora salir"
+    description: Necesita la key de Google Maps.
+  reminder_alarm:
+    name: Alarma de recordatorios
+    description: Alarma sonora y pantalla completa.
+  event_watches:
+    name: Torneos de Premier Padel
+  football_team:
+    name: Equipo de fútbol
+    description: Como lo escribe ESPN (por ejemplo, Racing Club). Vacío = sin avisos de partidos.
+  billing_skip_concepts:
+    name: Vencimientos a ignorar
+    description: Conceptos que ya tienen recordatorio fijo, separados por coma (alquiler,expensas).
+  tavily_api_key:
+    name: Key de Tavily (búsqueda web)
+  resend_api_key:
+    name: Key de Resend (mails salientes)
+  google_maps_api_key:
+    name: Key de Google Maps
+  notion_token:
+    name: Token de Notion
+  notion_lists_database_id:
+    name: Id de la base de Notion de listas
+  gmail_user:
+    name: Cuenta de Gmail para vencimientos
+  gmail_app_password:
+    name: Contraseña de aplicación de Gmail
+  apollo_owner_email:
+    name: Tu mail
+  idle_travel_origin:
+    name: Dirección de tu casa
+    description: Origen de los cálculos de viaje.
+  idle_travel_destination:
+    name: Destino habitual
+    description: Para la tarjeta de viaje del tablero.
+  idle_travel_label:
+    name: Etiqueta del destino habitual
+  waha_url:
+    name: URL de WAHA (WhatsApp)
+    description: Por ejemplo http://192.168.0.111:3000 si WAHA corre aparte.
+  waha_session:
+    name: Sesión de WAHA
+  waha_api_key:
+    name: Key de WAHA
+    description: Sin esta key, WhatsApp queda apagado.
+  whatsapp_to:
+    name: Tu número de WhatsApp
+    description: Solo dígitos con país (5491100000000).
+  whatsapp_contacts:
+    name: Contactos de WhatsApp
+    description: Lista cerrada, Nombre=549...,Otro=549...
+  speaker_url:
+    name: URL del parlante externo
+    description: El servicio jarvis-speaker (infra/speaker). Vacío = apagado.
+  speaker_route:
+    name: Qué sale por el parlante
+    description: apagado, avisos o todo.
+  speaker_token:
+    name: Token del parlante
+  mock_voice:
+    name: Respuestas simuladas (MOCK_VOICE)
+    description: Para probar el flujo sin gastar en APIs.
+  log_to_file:
+    name: Guardar logs en /share
+    description: /share/jarvis-apollo/logs/apollo.log sobrevive a las actualizaciones.
+  extra_env:
+    name: Variables extra
+    description: Otras variables de Apollo sin opción propia (NOMBRE y valor). Pisan a las de arriba.
+network:
+  8799/tcp: API y WebSocket de Apollo (la placa y la consola se conectan acá)

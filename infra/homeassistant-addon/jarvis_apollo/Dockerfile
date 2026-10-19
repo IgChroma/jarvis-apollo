@@ -1,0 +1,76 @@
+# Imagen del add-on de Jarvis para Home Assistant OS. El Supervisor la construye
+# en la Pi (no hay `image:` en config.yaml), con esta carpeta como contexto.
+#
+# Etapa 1: baja este repo (IgChroma/jarvis-apollo) y, con server/apply.sh, Apollo
+# upstream en su commit fijo + el overlay. Después arma apps/agent igual que
+# scripts/deploy-server.sh (sin tests, sin devDependencies) y el Dockerfile de
+# upstream (bun install --production + tsconfig mínimo de runtime).
+# Etapa 2: la misma base de upstream (oven/bun:1.3-slim, multi-arquitectura:
+# en la Pi baja la variante arm64) con solo lo necesario para correr.
+#
+# FROM fijo y no `FROM ${BUILD_FROM}`: un Supervisor viejo sin build.yaml pasa como
+# BUILD_FROM la base Alpine de Home Assistant, que no trae bun.
+FROM oven/bun:1.3-slim AS build
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Qué código de Jarvis se usa: repo de GitHub (dueño/nombre) y rama, tag o commit
+# completo. El commit de Apollo upstream lo fija server/apply.sh dentro de ese código.
+ARG JARVIS_GITHUB=IgChroma/jarvis-apollo
+ARG JARVIS_REF=main
+# Lo pasa el Supervisor (la `version` de config.yaml); solo va al log.
+ARG BUILD_VERSION=dev
+
+WORKDIR /build
+# Rompe-caché: Docker compara el CONTENIDO de esta respuesta en cada build, así que
+# si la rama avanzó (o cambiaste JARVIS_REF) las capas de abajo se rehacen, y
+# "Reconstruir" en Home Assistant trae el código nuevo aunque no cambie la versión.
+# Es la API pública de GitHub (60 consultas por hora por IP sin token).
+ADD https://api.github.com/repos/${JARVIS_GITHUB}/commits/${JARVIS_REF} /build/jarvis-commit.json
+
+# El sed: server/apply.sh puede venir con CRLF si se commiteó desde Windows antes
+# del .gitattributes, y el bash de Linux no tolera los \r.
+RUN set -eu; \
+    sha="$(bun -e "console.log((await Bun.file('/build/jarvis-commit.json').json()).sha ?? '')")"; \
+    if [ -z "$sha" ]; then \
+      echo "GitHub no devolvió el commit de ${JARVIS_GITHUB}@${JARVIS_REF}:" >&2; \
+      cat /build/jarvis-commit.json >&2; \
+      exit 1; \
+    fi; \
+    echo "Jarvis add-on ${BUILD_VERSION}: ${JARVIS_GITHUB} @ ${JARVIS_REF} = ${sha}"; \
+    git init -q jarvis; \
+    git -C jarvis fetch -q --depth 1 "https://github.com/${JARVIS_GITHUB}" "$sha"; \
+    git -C jarvis checkout -q FETCH_HEAD; \
+    sed -i 's/\r$//' jarvis/server/apply.sh; \
+    bash jarvis/server/apply.sh /build/apollo
+
+# apps/agent sin node_modules ni tests, y package.json SIN devDependencies: fuera
+# del monorepo "@apollo/typescript-config": "workspace:*" no existe y el install falla.
+RUN mkdir -p /app \
+ && tar -C /build/apollo/apps/agent --exclude node_modules --exclude __tests__ --exclude .dev.vars -cf - . \
+    | tar -C /app -xf - \
+ && cd /app \
+ && bun -e "const p = await Bun.file('package.json').json(); delete p.devDependencies; await Bun.write('package.json', JSON.stringify(p, null, 2) + '\n');" \
+ && bun install --production \
+ && cp docker/tsconfig.json tsconfig.json
+
+FROM oven/bun:1.3-slim
+
+WORKDIR /app
+COPY --from=build /app/package.json /app/tsconfig.json ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/src ./src
+
+COPY options-env.mjs /opt/jarvis-addon/options-env.mjs
+COPY run.sh /run.sh
+RUN sed -i 's/\r$//' /run.sh && chmod 0755 /run.sh
+
+# /data es del Supervisor (ahí escribe options.json): Apollo usa una subcarpeta.
+ENV APOLLO_DATA_DIRECTORY=/data/apollo \
+    APOLLO_HOST_PORT=8799
+EXPOSE 8799
+
+ENTRYPOINT []
+CMD ["/run.sh"]

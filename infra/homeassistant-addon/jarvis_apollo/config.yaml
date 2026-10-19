@@ -1,0 +1,110 @@
+# Add-on (app) de Home Assistant OS con el servidor de Jarvis (Apollo en Bun).
+# La imagen se construye EN la Pi: el Dockerfile baja este repo y Apollo upstream
+# en el commit fijo de server/apply.sh y aplica el overlay. Ver DOCS.md.
+#
+# Para publicar una versión nueva: subí los cambios del servidor a main y subí
+# acá `version`. Home Assistant ofrece "Actualizar" y reconstruye la imagen.
+name: Jarvis Apollo
+version: "0.1.0"
+slug: jarvis_apollo
+description: Servidor de voz de Jarvis (Apollo en Bun) para la placa ESP32, en el puerto 8799.
+url: https://github.com/IgChroma/jarvis-apollo/tree/main/infra/homeassistant-addon/jarvis_apollo
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+# Sin s6: la imagen es oven/bun. El init de Docker (tini) es PID 1 y le pasa el
+# SIGTERM a bun, así el apagado sigue siendo ordenado.
+init: true
+ports:
+  8799/tcp: 8799
+ports_description:
+  8799/tcp: API y WebSocket de Apollo (la placa y la consola se conectan acá)
+webui: "http://[HOST]:[PORT:8799]/health"
+watchdog: "http://[HOST]:[PORT:8799]/health"
+# /share/jarvis-apollo: logs que sobreviven a las actualizaciones e importación de
+# una base vieja. /share/piper: Piper local (opcional). Los datos de Apollo van
+# a /data/apollo, que entra en los backups del add-on.
+map:
+  - type: share
+    read_only: false
+options:
+  device_name: jarvis
+  openrouter_model: deepseek/deepseek-v4.1-flash
+  openrouter_stt_model: openai/whisper-large-v3-turbo
+  openrouter_embedding_model: openai/text-embedding-3-small
+  tts_provider: azure
+  azure_speech_region: brazilsouth
+  azure_speech_voice: es-AR-TomasNeural
+  piper_directory: /share/piper
+  piper_voice: es_MX-ald-medium.onnx
+  conversation_mode: true
+  router_mode: "on"
+  router_reasoning_explore: 0.2
+  personajes: true
+  departure_alerts: true
+  reminder_alarm: true
+  event_watches: false
+  speaker_route: avisos
+  waha_session: default
+  mock_voice: false
+  log_to_file: true
+  extra_env: []
+schema:
+  # --- Obligatorios (no tienen default: Home Assistant no arranca sin ellos)
+  device_shared_secret: password
+  dashboard_shared_secret: password
+  openrouter_api_key: password
+  # --- Dispositivo y modelos
+  device_name: match(^[A-Za-z0-9_-]+$)
+  openrouter_model: str
+  openrouter_stt_model: str
+  openrouter_embedding_model: str
+  # --- Voz
+  tts_provider: list(azure|piper|elevenlabs)
+  azure_speech_key: password?
+  azure_speech_region: str
+  azure_speech_voice: str
+  elevenlabs_api_key: password?
+  piper_directory: str?
+  piper_voice: str?
+  # --- Conversación y router
+  conversation_mode: bool
+  router_mode: list(on|shadow|off)
+  router_reasoning_explore: float(0,1)
+  personajes: bool
+  # --- Avisos
+  departure_alerts: bool
+  reminder_alarm: bool
+  event_watches: bool
+  football_team: str?
+  billing_skip_concepts: str?
+  # --- Integraciones opcionales (sin su key, la función no aparece)
+  tavily_api_key: password?
+  resend_api_key: password?
+  google_maps_api_key: password?
+  notion_token: password?
+  notion_lists_database_id: password?
+  gmail_user: password?
+  gmail_app_password: password?
+  apollo_owner_email: password?
+  idle_travel_origin: password?
+  idle_travel_destination: password?
+  idle_travel_label: str?
+  # WhatsApp (WAHA): apagado mientras no haya waha_api_key
+  waha_url: url?
+  waha_session: str
+  waha_api_key: password?
+  whatsapp_to: password?
+  whatsapp_contacts: password?
+  # Parlante externo (infra/speaker): apagado mientras no haya speaker_url y speaker_token
+  speaker_url: url?
+  speaker_route: list(apagado|avisos|todo)
+  speaker_token: password?
+  # --- Diagnóstico
+  mock_voice: bool
+  log_to_file: bool
+  extra_env:
+    - name: match(^[A-Z_][A-Z0-9_]*$)
+      value: str

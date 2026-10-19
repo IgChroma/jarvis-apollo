@@ -3,6 +3,13 @@
 Todo lo que corre en la Raspberry Pi además del contenedor de Apollo. Los comandos asumen
 `source jarvis.env` (para `$JARVIS_PI`) y se corren desde la raíz del repo, en la Mac.
 
+## Home Assistant OS — `homeassistant-addon/`
+
+Si la Pi corre Home Assistant OS en vez de Raspberry Pi OS, Apollo va como add-on: se instala
+desde la tienda agregando este repo como repositorio (`repository.yaml` en la raíz) o copiando
+`homeassistant-addon/jarvis_apollo` a `/addons`, y los secretos se cargan en la UI de Home
+Assistant. Paso a paso en [homeassistant-addon/jarvis_apollo/DOCS.md](homeassistant-addon/jarvis_apollo/DOCS.md).
+
 ## Servidores MCP — `mcp-servers/`
 
 Maps, Calendar y Notion, cada uno en su contenedor en la red `jarvis-mcp`. Paso a paso en
