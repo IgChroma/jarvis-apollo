@@ -13,8 +13,30 @@
 FROM oven/bun:1.3-slim AS build
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates \
+ && apt-get install -y --no-install-recommends git ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
+
+# Piper (voz local, sin internet) viene DENTRO de la imagen, con una voz: así el
+# add-on habla aunque no haya Azure ni nada en /share. Misma estructura que ~/piper
+# en la Pi con Raspberry Pi OS: /opt/piper/piper/piper y /opt/piper/voices/*.onnx.
+# Otras voces se bajan solas al arrancar (ver run.sh), así no engordan la imagen.
+ARG PIPER_RELEASE=2023.11.14-2
+ARG PIPER_VOICE=es_MX-ald-medium
+ARG PIPER_VOICE_PATH=es/es_MX/ald/medium
+RUN set -eu; \
+    case "$(uname -m)" in \
+      aarch64) piper_arch=aarch64 ;; \
+      x86_64) piper_arch=x86_64 ;; \
+      *) echo "Piper no tiene binario para $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    mkdir -p /opt/piper/voices; \
+    curl -fsSL "https://github.com/rhasspy/piper/releases/download/${PIPER_RELEASE}/piper_linux_${piper_arch}.tar.gz" \
+      | tar -xz -C /opt/piper; \
+    for suffix in .onnx .onnx.json; do \
+      curl -fsSL -o "/opt/piper/voices/${PIPER_VOICE}${suffix}" \
+        "https://huggingface.co/rhasspy/piper-voices/resolve/main/${PIPER_VOICE_PATH}/${PIPER_VOICE}${suffix}"; \
+    done; \
+    test -x /opt/piper/piper/piper
 
 # Qué código de Jarvis se usa: repo de GitHub (dueño/nombre) y rama, tag o commit
 # completo. El commit de Apollo upstream lo fija server/apply.sh dentro de ese código.
@@ -62,6 +84,7 @@ WORKDIR /app
 COPY --from=build /app/package.json /app/tsconfig.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/src ./src
+COPY --from=build /opt/piper /opt/piper
 
 COPY options-env.mjs /opt/jarvis-addon/options-env.mjs
 COPY run.sh /run.sh

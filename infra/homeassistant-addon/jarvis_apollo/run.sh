@@ -51,6 +51,37 @@ elif [ -f "$import_dir/$device_name.sqlite" ]; then
   log "Hay una base en $import_dir pero $DATA_DIR ya tiene una: no se importa nada."
 fi
 
+# Una voz de Piper que no vino en la imagen se baja una sola vez de Hugging Face
+# (rhasspy/piper-voices) a /data/piper-voices. Si no se puede, se usa la de la imagen.
+if [ -n "${JARVIS_PIPER_VOICE_DOWNLOAD:-}" ]; then
+  voice_file="$JARVIS_PIPER_VOICE_DOWNLOAD"
+  voice_base="${voice_file%.onnx}"
+  language_region="${voice_base%%-*}"
+  voice_rest="${voice_base#*-}"
+  voice_quality="${voice_rest##*-}"
+  voice_speaker="${voice_rest%-*}"
+  voice_url="https://huggingface.co/rhasspy/piper-voices/resolve/main/${language_region%%_*}/${language_region}/${voice_speaker}/${voice_quality}/${voice_file}"
+  mkdir -p /data/piper-voices
+  log "Bajando la voz de Piper $voice_file (una sola vez)..."
+  if VOICE_URL="$voice_url" VOICE_TARGET="/data/piper-voices/$voice_file" bun -e '
+      const url = process.env.VOICE_URL;
+      const target = process.env.VOICE_TARGET;
+      for (const suffix of ["", ".json"]) {
+        const response = await fetch(url + suffix);
+        if (!response.ok) throw new Error(`${response.status} ${url + suffix}`);
+        await Bun.write(target + suffix + ".tmp", response);
+      }'; then
+    mv -f "/data/piper-voices/$voice_file.tmp" "/data/piper-voices/$voice_file"
+    mv -f "/data/piper-voices/$voice_file.json.tmp" "/data/piper-voices/$voice_file.json"
+    log "Voz $voice_file lista."
+  else
+    rm -f /data/piper-voices/*.tmp
+    log "No se pudo bajar $voice_file: uso la voz de la imagen (es_MX-ald-medium)."
+    export PIPER_VOICE_MODEL=/opt/piper/voices/es_MX-ald-medium.onnx
+  fi
+fi
+unset JARVIS_PIPER_VOICE_DOWNLOAD
+
 # Piper es la red de seguridad de Azure: si no está, avisar (sin voz no hay asistente).
 if [ "${TTS_PROVIDER:-elevenlabs}" != elevenlabs ] && [ -n "${PIPER_BINARY:-}" ] && [ ! -x "$PIPER_BINARY" ]; then
   if [ "${TTS_PROVIDER}" = piper ] || [ -z "${AZURE_SPEECH_KEY:-}" ]; then

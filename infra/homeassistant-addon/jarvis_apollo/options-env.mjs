@@ -6,7 +6,7 @@
 //
 // run.sh hace `eval` de la salida. Por stderr solo salen NOMBRES, nunca valores.
 // Sale con 1 si falta algo obligatorio.
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 const optionsPath = process.argv[2] ?? '/data/options.json';
 
@@ -89,15 +89,31 @@ for (const [option, name] of Object.entries(SWITCH_OPTIONS)) {
 }
 if (options.mock_voice === true) environment.set('MOCK_VOICE', '1');
 
-// Piper: el binario y las voces se dejan en /share/piper (Samba o Studio Code
-// Server), con la misma estructura que ~/piper en la Pi con Raspberry Pi OS.
-if (!isBlank(options.piper_directory)) {
-  const directory = String(options.piper_directory).trim().replace(/\/+$/, '');
-  const voice = isBlank(options.piper_voice) ? 'es_MX-ald-medium.onnx' : String(options.piper_voice).trim();
-  environment.set('PIPER_BINARY', `${directory}/piper/piper`);
-  environment.set('PIPER_LIBRARY_DIR', `${directory}/piper`);
-  environment.set('PIPER_VOICE_MODEL', `${directory}/voices/${voice}`);
+// Piper viene en la imagen (/opt/piper, con es_MX-ald-medium). piper_directory
+// solo hace falta para usar un Piper propio (por ejemplo en /share/piper); si ahí
+// no hay binario, se usa el de la imagen. Una voz que no está en ningún lado la
+// baja run.sh a /data/piper-voices al arrancar (JARVIS_PIPER_VOICE_DOWNLOAD).
+const BUILTIN_PIPER_DIRECTORY = '/opt/piper';
+const DOWNLOADED_VOICES_DIRECTORY = '/data/piper-voices';
+const requestedPiperDirectory = isBlank(options.piper_directory)
+  ? BUILTIN_PIPER_DIRECTORY
+  : String(options.piper_directory).trim().replace(/\/+$/, '');
+const piperDirectory = existsSync(`${requestedPiperDirectory}/piper/piper`)
+  ? requestedPiperDirectory
+  : BUILTIN_PIPER_DIRECTORY;
+let piperVoice = isBlank(options.piper_voice) ? 'es_MX-ald-medium.onnx' : String(options.piper_voice).trim();
+if (!piperVoice.endsWith('.onnx')) piperVoice += '.onnx';
+if (!/^[a-z]{2,3}_[A-Z]{2}-[A-Za-z0-9_]+-(x_low|low|medium|high)\.onnx$/.test(piperVoice)) {
+  fail(`piper_voice: "${piperVoice}" no tiene la forma idioma_PAÍS-nombre-calidad.onnx (ej. es_AR-daniela-high.onnx)`);
 }
+const piperVoicePath =
+  [`${piperDirectory}/voices/${piperVoice}`, `${BUILTIN_PIPER_DIRECTORY}/voices/${piperVoice}`,
+    `${DOWNLOADED_VOICES_DIRECTORY}/${piperVoice}`].find((path) => existsSync(path)) ??
+  `${DOWNLOADED_VOICES_DIRECTORY}/${piperVoice}`;
+if (!existsSync(piperVoicePath)) environment.set('JARVIS_PIPER_VOICE_DOWNLOAD', piperVoice);
+environment.set('PIPER_BINARY', `${piperDirectory}/piper/piper`);
+environment.set('PIPER_LIBRARY_DIR', `${piperDirectory}/piper`);
+environment.set('PIPER_VOICE_MODEL', piperVoicePath);
 
 // Variables extra (lo que no tiene opción propia: ROUTER_JEV_MODEL,
 // REMINDER_ALARM_VOLUME, FIRMWARE_PUSH_DISABLED...). Pisan a las de arriba.

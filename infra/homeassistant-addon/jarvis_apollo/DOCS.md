@@ -101,7 +101,7 @@ Reconstruir o actualizar corta la conversación en curso; los datos no se tocan.
 | `/data/apollo` (interno del add-on) | `jarvis.sqlite` y `blobs/` (caché de voz, firmware OTA). Entra en los backups de Home Assistant del add-on. |
 | `/share/jarvis-apollo/logs/apollo.log` | Copia del log que sobrevive a reconstrucciones (rota a `.1` al arrancar si pasa de 20 MB). Se ve desde Studio Code Server o Samba. Tiene lo que se habló: no lo compartas. Se apaga con `log_to_file`. |
 | `/share/jarvis-apollo/import/` | Para traer una base vieja (ver abajo). |
-| `/share/piper/` | Piper local, opcional. |
+| `/data/piper-voices/` (interno) | Voces de Piper que no vienen en la imagen, bajadas al arrancar. |
 
 **Traer la base de la instalación anterior** (memoria, recordatorios, router): con el servidor
 viejo apagado, copiá `jarvis.sqlite` (y si querés `blobs/`) del volumen `docker_apollo-data` a
@@ -142,10 +142,12 @@ pone a cada entidad desde su ventana de configuración (⚙ → **Etiquetas**):
 
 Todas vienen apagadas y sin ellas el add-on arranca igual.
 
-- **Piper (voz local de respaldo)**: bajá `piper_linux_aarch64` y la voz `es_MX-ald-medium` y
-  dejalos como `/share/piper/piper/piper` y `/share/piper/voices/es_MX-ald-medium.onnx` (misma
-  estructura que `~/piper` del README). Si no hay Piper ni key de Azure, el log avisa que Jarvis
-  va a quedar mudo.
+- **Piper (voz local)**: viene incluido en la imagen con la voz `es_MX-ald-medium`, y es la voz
+  por defecto (`tts_provider: piper`). Con `tts_provider: azure` y sin `azure_speech_key`, Jarvis
+  también habla con Piper. Para otra voz, poné su nombre en `piper_voice` (por ejemplo
+  `es_AR-daniela-high.onnx`, acento argentino, más lenta en la Pi): se baja sola de
+  [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) la primera vez que arranca.
+  `piper_directory` solo hace falta para usar un Piper propio (por ejemplo en `/share/piper`).
 - **Servidores MCP (Maps, Calendar, Notion)**: en Home Assistant OS no existe la red Docker
   `jarvis-mcp`. Apollo los instala por URL desde la consola de administración, así que pueden
   correr en otra máquina de la red (`http://<ip>:<puerto>/sse`; Apollo acepta `http` hacia IPs
