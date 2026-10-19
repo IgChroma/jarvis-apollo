@@ -11,17 +11,19 @@ export const ACTION_INTENT_ID_SET: ReadonlySet<string> = new Set([
   'recordatorio',
   'agenda_crear',
   'pendientes',
+  // "Listo, la losa quedó en 25" sin haber llamado a casa_controlar.
+  'casa',
 ]);
 
 // Frases con las que el modelo da algo por hecho. Deliberadamente acotadas a
 // confirmaciones: "no puedo", una pregunta o una aclaración no disparan nada.
 const CONFIRMATION_PATTERN =
-  /\b(listo|hecho|ya est[áa]|qued[óo]|programad[oa]|anotad[oa]|agendad[oa]|cargad[oa]|guardad[oa]|te (lo )?aviso|te (lo )?recuerdo|te voy a avisar|lo (dejo|dejé) )/i;
+  /\b(listo|hecho|ya est[áa]|qued[óo]|programad[oa]|anotad[oa]|agendad[oa]|cargad[oa]|guardad[oa]|prendid[oa]|apagad[oa]|te (lo )?aviso|te (lo )?recuerdo|te voy a avisar|lo (dejo|dejé) )/i;
 
 // Sin intención (Jev no contestó a tiempo) el pedido de acción se reconoce por
 // el texto del usuario.
 const ACTION_REQUEST_PATTERN =
-  /\b(record[aá]|avis[aá]|agend[aá]|anot[aá]|program[aá]|haceme acordar|sac[aá] de|borr[aá])/i;
+  /\b(record[aá]|avis[aá]|agend[aá]|anot[aá]|program[aá]|haceme acordar|sac[aá] de|borr[aá]|prend[eé]|apag[aá])/i;
 
 // "Todos los días" dicho después de programar un aviso de una sola vez.
 const RECURRENCE_PATTERN =
@@ -95,7 +97,7 @@ export function looksLikeUnbackedClaim(input: {
 
 export const UNBACKED_CLAIM_NUDGE =
   'Atención: le confirmaste al usuario algo que no hiciste (ninguna herramienta, o un aviso de una sola vez cuando prometiste que se repite). ' +
-  'Llamá ahora a la herramienta que corresponde (set_reminder para una vez, set_recurring_reminder si se repite). ' +
+  'Llamá ahora a la herramienta que corresponde (set_reminder para una vez, set_recurring_reminder si se repite, casa_controlar para la casa). ' +
   'Si en realidad te falta un dato, no confirmes: preguntalo.';
 
 export const UNBACKED_DATA_NUDGE =

@@ -1,3 +1,4 @@
+import { listHomeToolDefinitionList } from '@/tools/casa';
 import { listCodingRepositoriesTool, startCodingTaskTool } from '@/tools/coding';
 import { deviceStatusTool, setBrightnessTool, setVolumeTool } from '@/tools/device';
 import { dollarRateTool } from '@/tools/dollar';
@@ -62,6 +63,8 @@ export function listBuiltinToolDefinitionList(): readonly ToolDefinition[] {
     sandboxExecTool,
     listCodingRepositoriesTool,
     startCodingTaskTool,
+    // Solo si el host tiene Home Assistant (tools/casa.ts).
+    ...listHomeToolDefinitionList(),
   ];
 }
 

@@ -5,7 +5,9 @@ import { createClaudeSpendGuard, type ClaudeBudgetStatus, type ClaudeSpendGuard 
 import {
   buildClaudeRequestParts,
   buildClaudeToolList,
+  buildClaudeToolSetKey,
   streamClaudeRound,
+  stripThinkingBlocks,
   type ClaudeStreamFunction,
 } from '@/claude/chat';
 import {
@@ -201,7 +203,12 @@ export function createClaudeProvider(dependencies: {
 
   function createTurnLlm(openRouterLlm: LlmAdapter): LlmAdapter {
     let decision: TurnDecision | undefined;
-    const assistantContentByToolCallId = new Map<string, readonly BetaContentBlockParam[]>();
+    // Contenido original de cada respuesta con herramientas, y con qué lista de
+    // herramientas se produjo (ver stripThinkingBlocks en claude/chat.ts).
+    const assistantRoundByToolCallId = new Map<
+      string,
+      { readonly content: readonly BetaContentBlockParam[]; readonly toolSetKey: string }
+    >();
 
     return async (input) => {
       decision ??= decide(input);
@@ -210,6 +217,14 @@ export function createClaudeProvider(dependencies: {
       }
       const current = decision;
       const startedAt = now();
+      const toolList = buildClaudeToolList(input.toolDefinitionList);
+      const toolSetKey = buildClaudeToolSetKey(toolList);
+      const assistantContentByToolCallId = new Map(
+        [...assistantRoundByToolCallId.entries()].map(([toolCallId, stored]) => [
+          toolCallId,
+          stored.toolSetKey === toolSetKey ? stored.content : stripThinkingBlocks(stored.content),
+        ]),
+      );
       try {
         const round = await streamClaudeRound({
           stream: dependencies.stream,
@@ -221,7 +236,7 @@ export function createClaudeProvider(dependencies: {
             cacheableSystemPrefix: input.systemPromptCacheablePrefix,
             assistantContentByToolCallId,
           }),
-          toolList: buildClaudeToolList(input.toolDefinitionList),
+          toolList,
           // forced tool_choice es un 400 en Opus 5.5 y Sonnet 5.5: cuando el
           // turno pide 'required' (turn/claims.ts) la nota de sistema que va
           // en la conversación ya le dice qué herramienta llamar.
@@ -265,7 +280,10 @@ export function createClaudeProvider(dependencies: {
         // reenviar ese contenido tiene reglas propias que no hacen falta acá.
         if (!round.servedByFallback) {
           for (const toolCall of round.toolCallList) {
-            assistantContentByToolCallId.set(toolCall.id, round.message.content);
+            assistantRoundByToolCallId.set(toolCall.id, {
+              content: round.message.content,
+              toolSetKey,
+            });
           }
         }
         return { text: round.text, toolCallList: round.toolCallList };

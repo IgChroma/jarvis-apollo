@@ -36,6 +36,7 @@ export const ROUTER_ALWAYS_TOOL_PATTERN_LIST: readonly RegExp[] = [
 
 export type RouterIntentId =
   | 'hora'
+  | 'casa'
   | 'clima'
   | 'agenda_leer'
   | 'agenda_crear'
@@ -88,10 +89,28 @@ export const ROUTER_INTENT_LIST: readonly RouterIntent[] = [
     toolPatternList: [],
     fastPath: { withoutEscape: true },
   },
+  // Antes que clima y dispositivo: cuando el modelo usa una herramienta casa_*,
+  // la etiqueta para aprender es esta (ver resolveIntentForUsedToolList).
+  {
+    id: 'casa',
+    description:
+      'prender, apagar o consultar luces, enchufes o ventiladores de la casa, o la calefacción, losa radiante o aire de un ambiente: ponerle una temperatura, subirla, bajarla o ver cómo está',
+    toolPatternList: [
+      nativeTool('casa_controlar'),
+      nativeTool('casa_estado'),
+      nativeTool('casa_listar'),
+    ],
+  },
   {
     id: 'clima',
     description: 'preguntar el clima, la temperatura o el pronóstico',
-    toolPatternList: [nativeTool('weather_now'), nativeTool('set_weather_location')],
+    toolPatternList: [
+      nativeTool('weather_now'),
+      nativeTool('set_weather_location'),
+      // "¿Qué temperatura hay en el cuarto de los chicos?" también puede caer
+      // acá: la lectura de la casa es liviana y evita una ronda de escape.
+      nativeTool('casa_estado'),
+    ],
   },
   {
     id: 'agenda_leer',
@@ -224,6 +243,13 @@ export const ROUTER_INTENT_LIST: readonly RouterIntent[] = [
       nativeTool('clear_focus'),
       nativeTool('start_pomodoro'),
       nativeTool('set_timer'),
+      // El 2026-10-18 "poné la temperatura de losa cuarto chicos en 25" cayó
+      // acá (p=0,56), antes de que existiera la intención casa. La cabeza local
+      // del router (head.ts) no conoce casa hasta reentrenarse, y Jev puede
+      // seguir mandando la casa a "aparatos": las herramientas viajan también acá.
+      nativeTool('casa_controlar'),
+      nativeTool('casa_estado'),
+      nativeTool('casa_listar'),
     ],
   },
   {

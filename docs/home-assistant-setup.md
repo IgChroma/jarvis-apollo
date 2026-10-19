@@ -58,6 +58,47 @@ Home Assistant sin que crees un token de larga duración. El contrato completo e
 - La vista Casa muestra hasta 12 mosaicos, más el dólar blue (dolarapi.com).
 - Los cambios de etiqueta se ven solos en unos segundos: no hay que reflashear ni reiniciar.
 
+### La casa por voz (add-on 0.5.0)
+
+Con la misma conexión, Jarvis maneja por voz lo que tiene la etiqueta `jarvis` (luces,
+enchufes, ventiladores, `input_boolean`, climas y losas) y lee los sensores. Son tres
+herramientas del servidor (`server/overlay/apps/agent/src/tools/casa.ts`, lógica en
+`homeassistant/voice.ts`), que solo existen si hay Home Assistant:
+
+| Herramienta | Qué hace |
+|---|---|
+| `casa_listar` | Una línea por entidad etiquetada: nombre, entity_id, estado y, en climas, actual, objetivo, límites y modos |
+| `casa_estado` | Lo mismo para una o varias entidades, por entity_id o por nombre |
+| `casa_controlar` | `turn_on`, `turn_off`, `toggle` (luz, enchufe, ventilador, input_boolean, clima); `set_temperature` (clima: `temperatura` absoluta o `ajuste` en grados, opcional `modo`); `set_hvac_mode` |
+
+Reglas (las mismas que un toque en la placa, más algunas propias de la voz):
+
+- **Solo entidades con la etiqueta en ese momento** (la etiqueta se relee cada minuto). Un
+  entity_id válido sin etiqueta se rechaza con un error que el modelo puede decir.
+- **Nombres tolerantes:** "losa cuarto chicos", "la loza del cuarto de los chicos" y
+  `climate.losa_cuarto_chicos` son lo mismo (sin tildes, mayúsculas, artículos ni plurales;
+  "loza" = "losa"). Si el nombre encaja con dos ("la losa"), no elige: devuelve las dos y
+  Jarvis pregunta. Así el pedido se resuelve en **una sola ronda**, sin listar antes.
+- **Temperatura:** se limita a `min_temp`/`max_temp` (7-35 si la entidad no los informa) y se
+  redondea a `target_temp_step` (0,5 por defecto; las losas de casa usan 0,1). Si se recortó,
+  el resultado lo dice. "Subí 2 grados" usa `ajuste`: se suma al objetivo actual (hasta ±15).
+- **Poner una temperatura no prende el equipo.** Las losas están en `off` buena parte del
+  tiempo; prenderlas es gastar energía y el usuario puede querer solo dejar el objetivo listo.
+  Si está apagada, se guarda el objetivo y el resultado avisa ("está apagada… ofrecé
+  prenderla"). Si el pedido ya dice prenderla, el modelo manda `modo: "heat"` en la misma
+  llamada.
+- **Prender un clima:** si tiene un único modo de encendido, o calor sin frío (las losas:
+  `heat/auto/off`), va a ese modo con `climate.set_hvac_mode`; un aire con frío y calor usa
+  `climate.turn_on` y vuelve al último modo. Apagar es `hvac_mode: off`.
+- **Lectura de vuelta:** después del servicio se lee el estado; si todavía no cambió, se
+  relee una vez a los 0,7 s. Jarvis dice lo que muestra Home Assistant, no lo que pidió.
+  También se empuja el tablero para que el mosaico cambie enseguida.
+- **Sin confirmación:** nada de esto es destructivo; se deshace con otra frase.
+
+El router tiene una intención `casa` para estas frases, y las mismas herramientas viajan con
+`dispositivo` (donde caían antes) y `casa_estado` con `clima` ("¿qué temperatura hay en el
+cuarto?"). Los esquemas son chicos a propósito: las tres juntas suman ~1,4 KB (una MCP típica pesa más que eso sola).
+
 ---
 
 ## 3. Claude con tope de gasto

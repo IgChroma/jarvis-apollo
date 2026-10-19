@@ -154,3 +154,6 @@ Qué se lee:
   interruptores, `climate_up`/`climate_down` para climas, con objetivo limitado a
   `min_temp`/`max_temp` de la entidad). Lo demás se ignora con una línea de log, sin
   error a la placa; el tablero se empuja igual para que la placa deshaga lo que pintó.
+- **Por voz** (`casa_listar`, `casa_estado`, `casa_controlar`): la misma etiqueta y la misma
+  conexión; después de un cambio por voz también se empuja el tablero. Reglas en
+  [home-assistant-setup.md](home-assistant-setup.md#la-casa-por-voz-add-on-050).

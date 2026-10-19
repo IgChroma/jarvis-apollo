@@ -17,6 +17,8 @@ import {
   resolveHomeAssistantConnection,
 } from '@/homeassistant/client';
 import { createHomeAssistantDashboardSource } from '@/homeassistant/source';
+import { createHomeAssistantVoiceControl } from '@/homeassistant/voice';
+import { setHomeVoiceControl } from '@/tools/casa';
 import { startIdleRotation } from '@/idle/supervisor';
 import {
   TRAVEL_TIME_CACHE_MILLISECONDS,
@@ -263,18 +265,34 @@ export async function startApolloHost(
   // `homeAssistantSource` queda undefined y el tablero sale como antes, sin
   // mosaicos ni eventos de calendario.
   const homeAssistantConnection = resolveHomeAssistantConnection(processEnvironment);
-  const homeAssistantSource =
+  const homeAssistantClient =
     homeAssistantConnection === undefined
       ? undefined
-      : createHomeAssistantDashboardSource({
-          client: createHomeAssistantClient({ connection: homeAssistantConnection }),
-        });
+      : createHomeAssistantClient({ connection: homeAssistantConnection });
+  const homeAssistantSource =
+    homeAssistantClient === undefined
+      ? undefined
+      : createHomeAssistantDashboardSource({ client: homeAssistantClient });
+  // La misma conexión le da a Jarvis las herramientas casa_* (tools/casa.ts):
+  // control por voz de lo etiquetado `jarvis`. Tras cada cambio se empuja el
+  // tablero para que el mosaico lo muestre sin esperar la vuelta de 10 s.
+  setHomeVoiceControl(
+    homeAssistantClient === undefined
+      ? undefined
+      : createHomeAssistantVoiceControl({
+          client: homeAssistantClient,
+          onControlled: () => {
+            void dashboardSupervisor.refreshNow().catch(() => undefined);
+          },
+        }),
+  );
   if (homeAssistantConnection !== undefined) {
     console.log(
       JSON.stringify({
         level: 'info',
         message: 'home_assistant_tablero_habilitado',
         via: homeAssistantConnection.source,
+        voz: true,
       }),
     );
   }

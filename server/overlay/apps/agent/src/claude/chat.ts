@@ -167,18 +167,86 @@ export function buildClaudeRequestParts(input: {
   };
 }
 
+// El nombre de una herramienta que la API acepta. Uno inválido es un 400 del
+// pedido ENTERO, no solo de esa herramienta.
+export const CLAUDE_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+
+// Lo que la API no acepta en la RAÍZ de un input_schema: tiene que ser un
+// objeto (`type: "object"`), y oneOf/anyOf/allOf arriba de todo son un 400. Los
+// esquemas de los servidores MCP llegan tal cual los publica cada servidor
+// (mcp/adapter.ts), así que se limpian acá; adentro de las propiedades no se
+// toca nada.
+const ROOT_SCHEMA_KEY_DROP_SET: ReadonlySet<string> = new Set([
+  '$schema',
+  '$id',
+  'oneOf',
+  'anyOf',
+  'allOf',
+  'not',
+  'enum',
+  'const',
+]);
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function sanitizeClaudeInputSchema(parameters: unknown): BetaTool.InputSchema {
+  const schema: Record<string, unknown> = {};
+  if (isPlainObject(parameters)) {
+    for (const [key, value] of Object.entries(parameters)) {
+      if (!ROOT_SCHEMA_KEY_DROP_SET.has(key)) {
+        schema[key] = value;
+      }
+    }
+  }
+  schema.type = 'object';
+  if (schema.properties !== undefined && !isPlainObject(schema.properties)) {
+    delete schema.properties;
+  }
+  if (
+    schema.required !== undefined &&
+    !(Array.isArray(schema.required) && schema.required.every((entry) => typeof entry === 'string'))
+  ) {
+    delete schema.required;
+  }
+  return schema as BetaTool.InputSchema;
+}
+
 export function buildClaudeToolList(
   toolDefinitionList: readonly LanguageModelToolDescriptor[],
 ): BetaTool[] {
-  return toolDefinitionList.map((tool) => ({
-    name: tool.name,
-    description: tool.description,
-    input_schema: { ...(tool.parameters ?? {}), type: 'object' } as BetaTool.InputSchema,
-    // Por defecto en pedidos con streaming. Sin validación del servidor, el
-    // único control es el de cada herramienta: todas parsean sus argumentos con
-    // su propio esquema antes de hacer nada (tools/router.ts).
-    eager_input_streaming: true,
-  }));
+  return toolDefinitionList
+    .filter((tool) => CLAUDE_TOOL_NAME_PATTERN.test(tool.name))
+    .map((tool) => ({
+      name: tool.name,
+      ...(tool.description.trim().length > 0 ? { description: tool.description } : {}),
+      input_schema: sanitizeClaudeInputSchema(tool.parameters),
+      // Por defecto en pedidos con streaming. Sin validación del servidor, el
+      // único control es el de cada herramienta: todas parsean sus argumentos con
+      // su propio esquema antes de hacer nada (tools/router.ts).
+      eager_input_streaming: true,
+    }));
+}
+
+// Pensamiento preservado (Haiku 5.5, Sonnet 5.5, Opus 5.5): un bloque `thinking`
+// queda atado al `system`, a las `tools` y a los mensajes que tenía antes. Si se
+// reenvía después de cambiar cualquiera de esos, la API contesta 400 (cuentas
+// creadas desde el 2026-08-31). Dentro de un turno el `system` no cambia y la
+// conversación solo crece, pero la lista de herramientas SÍ puede cambiar: el
+// router la amplía cuando el modelo pide `usar_todas_las_herramientas`. Esa
+// ronda se reenvía sin su razonamiento; las siguientes, producidas ya con la
+// lista nueva, conservan el suyo.
+export function buildClaudeToolSetKey(toolList: readonly BetaTool[]): string {
+  return JSON.stringify(toolList);
+}
+
+export function stripThinkingBlocks(
+  content: readonly BetaContentBlockParam[],
+): BetaContentBlockParam[] {
+  return content.filter(
+    (block) => block.type !== 'thinking' && block.type !== 'redacted_thinking',
+  );
 }
 
 export type ClaudeRoundFailure =

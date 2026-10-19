@@ -24,7 +24,7 @@ import {
   stopSpeakerVoice,
 } from '@/speaker/output';
 import { markSpeechFinished, markSpeechStarted } from '@/idle/speech-gate';
-import { buildInstalledToolPromptNote } from '@/persona/soul';
+import { buildHomeControlPromptNote, buildInstalledToolPromptNote } from '@/persona/soul';
 import {
   encodeServerToDeviceMessage,
   type ServerToDeviceMessage,
@@ -199,9 +199,10 @@ export async function executeApolloTurn(
   );
   const toolDefinitionMap =
     dependencies.toolDefinitionMap ?? createBuiltinToolDefinitionMap();
-  const installedToolNote = buildInstalledToolPromptNote(
-    [...toolDefinitionMap.keys()].filter((toolName) => isNamespacedMcpToolName(toolName)),
-  );
+  const installedToolNote =
+    buildInstalledToolPromptNote(
+      [...toolDefinitionMap.keys()].filter((toolName) => isNamespacedMcpToolName(toolName)),
+    ) + buildHomeControlPromptNote([...toolDefinitionMap.keys()]);
 
   const openRouterLlm: VoiceAdapters['llm'] = async ({
     messageList,

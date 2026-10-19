@@ -44,6 +44,20 @@ export function buildInstalledToolPromptNote(
   );
 }
 
+// La casa (Home Assistant) solo cuando el host la conectó (tools/casa.ts). Va
+// en la parte estable del prompt: no cambia de turno a turno.
+export function buildHomeControlPromptNote(toolNameList: readonly string[]): string {
+  if (!toolNameList.includes('casa_controlar')) {
+    return '';
+  }
+  return (
+    '\nCasa: luces, enchufes, losas radiantes, aires y sensores se manejan con casa_controlar y se leen con casa_estado;' +
+    ' pasales el nombre como lo dijo el usuario (o el entity_id). casa_listar solo si no sabés qué hay.' +
+    ' "Subí 2 grados" es set_temperature con ajuste 2. Nunca digas que lo hiciste sin llamar a casa_controlar.' +
+    ' Después confirmá en una frase corta cómo quedó según lo que devuelve, y si avisa algo (está apagada, el máximo), decilo.'
+  );
+}
+
 // Sin esto, "sacá tal cosa de pendientes" se iba por el MCP de Notion: buscaba
 // la página y trataba de tildar "Hecho" con API-update-page-markdown, que edita
 // el CONTENIDO y no las propiedades. Notion devolvia 400 "No matches found" y

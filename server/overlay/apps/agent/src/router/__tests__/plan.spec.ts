@@ -251,3 +251,78 @@ describe('Jev request and response', () => {
     expect(verdict.costUsd).toBe(0.000014);
   });
 });
+
+// "Poné la temperatura de losa cuarto chicos en 25" (2026-10-18): Jev la mandó
+// a dispositivo con 0,56 y el modelo no tenía ninguna herramienta de la casa.
+describe('la casa (Home Assistant)', () => {
+  const HOME_TOOL_LIST = ['casa_listar', 'casa_estado', 'casa_controlar'];
+  const availableToolNameList = [
+    ...AVAILABLE_TOOL_NAME_LIST,
+    'set_volume',
+    'set_brightness',
+    'device_status',
+    'parlante',
+    ...HOME_TOOL_LIST,
+  ];
+
+  it('la intención casa acota a las tres herramientas de la casa', () => {
+    const plan = planRoute({
+      intentProbabilityMap: probabilities({ casa: 0.92, dispositivo: 0.05 }),
+      noiseProbability: 0.05,
+      availableToolNameList,
+      nowMilliseconds: 0,
+    });
+    expect(plan.tier).toBe('narrow');
+    expect(plan.toolNameList).toEqual([
+      'casa_listar',
+      'casa_estado',
+      'casa_controlar',
+      'recall_conversation',
+    ]);
+  });
+
+  it('si cae en dispositivo, la casa viaja igual', () => {
+    const plan = planRoute({
+      intentProbabilityMap: probabilities({ dispositivo: 0.8, casa: 0.1 }),
+      noiseProbability: 0.05,
+      availableToolNameList,
+      nowMilliseconds: 0,
+    });
+    expect(plan.tier).toBe('narrow');
+    for (const toolName of HOME_TOOL_LIST) {
+      expect(plan.toolNameList).toContain(toolName);
+    }
+  });
+
+  it('con poca confianza va con todas, casa incluida', () => {
+    const plan = planRoute({
+      intentProbabilityMap: probabilities({ dispositivo: 0.56, casa: 0.3 }),
+      noiseProbability: 0.05,
+      availableToolNameList,
+      nowMilliseconds: 0,
+    });
+    expect(plan.tier).toBe('full');
+    expect(plan.toolNameList).toBeUndefined();
+  });
+
+  it('"qué temperatura hay en el cuarto" en clima también puede leer la casa', () => {
+    const plan = planRoute({
+      intentProbabilityMap: probabilities({ clima: 0.85 }),
+      noiseProbability: 0.05,
+      availableToolNameList,
+      nowMilliseconds: 0,
+    });
+    expect(plan.toolNameList).toContain('casa_estado');
+    expect(plan.toolNameList).not.toContain('casa_controlar');
+  });
+
+  it('usar casa_controlar etiqueta el turno como casa, y Jev conoce la intención', () => {
+    expect(resolveIntentForUsedToolList(['casa_controlar'], 'dispositivo')).toBe('dispositivo');
+    expect(resolveIntentForUsedToolList(['casa_controlar'], 'otro')).toBe('casa');
+    expect(resolveIntentForUsedToolList(['casa_estado'], undefined)).toBe('casa');
+    const body = buildJevRequestBody('poné la losa del cuarto de los chicos en 25', {}, 'm') as {
+      questions: { intent: { criteria: Record<string, string> } };
+    };
+    expect(body.questions.intent.criteria.casa).toContain('losa radiante');
+  });
+});

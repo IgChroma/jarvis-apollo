@@ -138,6 +138,20 @@ pone a cada entidad desde su ventana de configuración (⚙ → **Etiquetas**):
   (el clima vuelve a salir de open-meteo, sin mín./máx.).
 - El resumen del **Registro** al arrancar dice `Home Assistant: sí` cuando el token está.
 
+### Por voz (desde la versión 0.5.0)
+
+Lo mismo que tiene la etiqueta `jarvis` se maneja hablando: "poné la losa del cuarto de los
+chicos en 25", "subí dos grados la losa del cuarto lago", "prendé la losa del cuarto lago",
+"¿cómo está la losa del cuarto de los chicos?". Jarvis entiende el nombre amigable tal como lo
+decís (sin importar tildes, artículos ni "losa"/"loza") y contesta con cómo quedó según Home
+Assistant. Si el nombre encaja con más de una entidad ("la losa"), pregunta cuál.
+
+- **Poner una temperatura no prende la losa.** Si está apagada, guarda el objetivo y te avisa;
+  decí "prendela" (o "prendé la losa en 25") para que caliente.
+- La temperatura se limita al mínimo y máximo de la entidad y se redondea a su paso.
+- No pide confirmación, y sigue valiendo la regla de la etiqueta: sin `jarvis`, Jarvis no
+  puede tocar una entidad aunque sepa su nombre. Detalle en `docs/home-assistant-setup.md`.
+
 ## Claude (opcional, desde la versión 0.4.0)
 
 Con una key de Anthropic, la **conversación** pasa a Claude; sin ella todo sigue por OpenRouter
