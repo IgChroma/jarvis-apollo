@@ -50,6 +50,9 @@ private:
     static constexpr uint32_t kHoldToTalkMs = 450;
     static constexpr uint32_t kTouchPollMs = 20;
     static constexpr int kMaxTouchReadFailures = 25;
+    // Con el táctil trabado se reintenta más despacio: no vale la pena ocupar el
+    // bus I2C del codec 50 veces por segundo con un controlador que no contesta.
+    static constexpr uint32_t kTouchRetryMs = 500;
 
     esp_lcd_touch_handle_t touch_handle_;
     Display* display_;
@@ -77,15 +80,31 @@ private:
             uint16_t x = 0, y = 0;
             uint8_t point_count = 0;
             if (esp_lcd_touch_read_data(touch_handle_) != ESP_OK) {
-                // Un controlador que nunca contesta loguearía un error por
-                // sondeo, para siempre. Mejor rendirse que ahogar el log.
-                if (++consecutive_read_failures >= kMaxTouchReadFailures) {
-                    ESP_LOGE(kTag, "Touch controller unresponsive, stopping gesture task");
-                    vTaskDelete(nullptr);
-                    return;
+                // Antes, a las 25 fallas seguidas (medio segundo) la tarea se
+                // borraba y el táctil quedaba muerto hasta reiniciar: en la P4 el
+                // GT911 comparte el I2C con el codec y un tropezón corto alcanzaba
+                // ("cambié a Casa y quedó trabado"). Ahora se espera más entre
+                // intentos y se sigue probando para siempre; el log avisa una vez
+                // al trabarse y otra al volver, sin ahogarse.
+                if (++consecutive_read_failures == kMaxTouchReadFailures) {
+                    ESP_LOGW(kTag, "Touch controller not answering, retrying every %d ms",
+                             (int)kTouchRetryMs);
                 }
-                vTaskDelay(pdMS_TO_TICKS(kTouchPollMs));
+                // Un hold en curso no puede quedar grabando sin dedo que lo suelte.
+                if (is_hold_talking) {
+                    is_hold_talking = false;
+                    Application::GetInstance().StopListening();
+                }
+                was_pressed = false;
+                press_target = TouchTarget{};
+                vTaskDelay(pdMS_TO_TICKS(consecutive_read_failures >= kMaxTouchReadFailures
+                                             ? kTouchRetryMs
+                                             : kTouchPollMs));
                 continue;
+            }
+            if (consecutive_read_failures >= kMaxTouchReadFailures) {
+                ESP_LOGI(kTag, "Touch controller back after %d failed reads",
+                         consecutive_read_failures);
             }
             consecutive_read_failures = 0;
             bool is_pressed =

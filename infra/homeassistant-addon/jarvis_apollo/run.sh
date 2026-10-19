@@ -52,7 +52,10 @@ elif [ -f "$import_dir/$device_name.sqlite" ]; then
 fi
 
 # Una voz de Piper que no vino en la imagen se baja una sola vez de Hugging Face
-# (rhasspy/piper-voices) a /data/piper-voices. Si no se puede, se usa la de la imagen.
+# (rhasspy/piper-voices) a /data/piper-voices, EN SEGUNDO PLANO: Jarvis arranca ya
+# con la voz de la imagen y usa la nueva desde el próximo reinicio. Bajarla antes
+# de arrancar tardaba más que la paciencia del watchdog (la voz "high" son 114 MB):
+# el Supervisor reiniciaba el add-on a mitad de la descarga, para siempre.
 if [ -n "${JARVIS_PIPER_VOICE_DOWNLOAD:-}" ]; then
   voice_file="$JARVIS_PIPER_VOICE_DOWNLOAD"
   voice_base="${voice_file%.onnx}"
@@ -62,23 +65,25 @@ if [ -n "${JARVIS_PIPER_VOICE_DOWNLOAD:-}" ]; then
   voice_speaker="${voice_rest%-*}"
   voice_url="https://huggingface.co/rhasspy/piper-voices/resolve/main/${language_region%%_*}/${language_region}/${voice_speaker}/${voice_quality}/${voice_file}"
   mkdir -p /data/piper-voices
-  log "Bajando la voz de Piper $voice_file (una sola vez)..."
-  if VOICE_URL="$voice_url" VOICE_TARGET="/data/piper-voices/$voice_file" bun -e '
-      const url = process.env.VOICE_URL;
-      const target = process.env.VOICE_TARGET;
-      for (const suffix of ["", ".json"]) {
-        const response = await fetch(url + suffix);
-        if (!response.ok) throw new Error(`${response.status} ${url + suffix}`);
-        await Bun.write(target + suffix + ".tmp", response);
-      }'; then
-    mv -f "/data/piper-voices/$voice_file.tmp" "/data/piper-voices/$voice_file"
-    mv -f "/data/piper-voices/$voice_file.json.tmp" "/data/piper-voices/$voice_file.json"
-    log "Voz $voice_file lista."
-  else
-    rm -f /data/piper-voices/*.tmp
-    log "No se pudo bajar $voice_file: uso la voz de la imagen (es_MX-ald-medium)."
-    export PIPER_VOICE_MODEL=/opt/piper/voices/es_MX-ald-medium.onnx
-  fi
+  export PIPER_VOICE_MODEL=/opt/piper/voices/es_MX-ald-medium.onnx
+  log "Bajando la voz de Piper $voice_file en segundo plano; mientras tanto habla con es_MX-ald-medium."
+  (
+    if VOICE_URL="$voice_url" VOICE_TARGET="/data/piper-voices/$voice_file" bun -e '
+        const url = process.env.VOICE_URL;
+        const target = process.env.VOICE_TARGET;
+        for (const suffix of ["", ".json"]) {
+          const response = await fetch(url + suffix);
+          if (!response.ok) throw new Error(`${response.status} ${url + suffix}`);
+          await Bun.write(target + suffix + ".tmp", response);
+        }'; then
+      mv -f "/data/piper-voices/$voice_file.json.tmp" "/data/piper-voices/$voice_file.json"
+      mv -f "/data/piper-voices/$voice_file.tmp" "/data/piper-voices/$voice_file"
+      log "Voz $voice_file lista: se usa desde el próximo reinicio del add-on."
+    else
+      rm -f /data/piper-voices/*.tmp
+      log "No se pudo bajar $voice_file: sigue la voz de la imagen (es_MX-ald-medium)."
+    fi
+  ) &
 fi
 unset JARVIS_PIPER_VOICE_DOWNLOAD
 
