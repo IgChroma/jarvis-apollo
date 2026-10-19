@@ -12,12 +12,14 @@ habla: lo maneja la placa y no se manda como gesto.
   Assistant mezclados con los recordatorios de Jarvis, como hoy. La tarjeta de clima
   sale de esta columna.
 - **Centro:** pendientes, como hoy.
+- **Abajo de izquierda y centro**, con el ancho de las dos: una franja de conversación, que
+  reemplaza a Einstein. Muestra el estado ("Escuchando", "Pensando"...) y hasta 4 renglones del
+  texto de lo que oyó o dice Jarvis (`status_label_`, `notification_label_` y la burbuja de
+  texto).
 - **Derecha:** de arriba hacia abajo:
   - Un calendario del mes, con los días que tienen eventos marcados y hoy resaltado.
-  - El clima de tu ciudad: temperatura, condición y mínima/máxima del día.
-  - Una franja de conversación, que reemplaza a Einstein. Muestra el estado ("Escuchando",
-    "Pensando"...) y el texto de lo que oyó o dice Jarvis (`status_label_`,
-    `notification_label_` y la burbuja de texto).
+  - El clima de tu ciudad: temperatura, condición (con el dólar blue promedio al lado, si
+    `home.dollarBlue` viene) y mínima/máxima del día.
   - Los botones Hablar y Enviar.
 
   **Einstein se elimina.**

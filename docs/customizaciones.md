@@ -182,18 +182,22 @@ vistas (contrato en [vistas-tablero.md](vistas-tablero.md)), que se cambian con 
 de habla: lo resuelve la placa y no viaja al servidor.
 
 - **Inicio:** agenda (calendario + recordatorios mezclados por hora) a la izquierda, pendientes
-  (y el viaje con tráfico, si hay destino) al medio, y a la derecha el calendario del mes (hoy
-  recuadrado, días con eventos en naranja y los eventos de hoy debajo), el clima (temperatura
-  grande, condición, mín./máx. y humedad cuando vienen de Home Assistant), la **franja de
-  conversación** (estado del turno y lo que oyó o dice Jarvis) y los botones Hablar/Enviar.
-  Cuando empieza una conversación la pantalla vuelve sola a Inicio.
+  (y el viaje con tráfico, si hay destino) al medio, y debajo de las dos, con el ancho de ambas,
+  la **franja de conversación**: el estado del turno ("Escuchando...", "Pensando...") y hasta 4
+  renglones de lo que oyó o dice Jarvis, cortados con "..." si no entra. A la derecha, el
+  calendario del mes (hoy recuadrado, días con eventos en naranja y los eventos de hoy debajo),
+  el clima (temperatura grande, condición con el **dólar blue promedio** al lado —(compra +
+  venta) / 2, sale de `home.dollarBlue` y no se muestra si no hay—, mín./máx. y humedad cuando
+  vienen de Home Assistant) y los botones Hablar/Enviar. Cuando empieza una conversación la
+  pantalla vuelve sola a Inicio.
 - **Casa:** grilla de hasta 12 mosaicos de Home Assistant (entidades con la etiqueta `jarvis`)
   y una franja con el dólar blue. Un toque en un interruptor lo prende o apaga; − y + mueven el
   clima 0,5 °C. La placa pinta el cambio en el acto y manda `ha_action`; el tablero que el
   servidor empuja enseguida lo confirma o lo corrige. Los sensores no se tocan y lo no
   disponible sale en gris.
-- En la 4.3C (800×480) la columna derecha va apretada: entra un evento de hoy; en la P4-7B
-  (1024×600), los cuatro. El log de arranque (`tablero armado: ...`) dice cuánto mide cada cosa.
+- Agenda y eventos de hoy muestran solo lo que entra entero (en la 4.3C, 800×480, entran menos
+  que en la P4-7B, 1024×600). El log de arranque (`tablero armado: ...`) dice cuánto mide cada
+  cosa, cuántos eventos entran y cuántos renglones tiene la franja de conversación.
 - El servidor arma y **recorta** el contenido (`dashboard/payload.ts`) y lo manda **cada 10 s
   aunque no haya cambiado**: mandarlo solo al cambiar dejaba la pantalla vacía después de cada
   reinicio de la placa.

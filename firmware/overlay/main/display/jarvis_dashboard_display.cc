@@ -54,8 +54,9 @@ constexpr int kClockTickPeriodMicroseconds = 10 * 1000 * 1000;
 
 // Anchos del reparto, en pixeles del panel de 800. En otros anchos se escalan
 // (ScaledWidth); la columna de la derecha se queda con el resto. Agenda y
-// pendientes ceden lugar respecto del reparto con Einstein: la derecha ahora
-// apila calendario, clima, conversacion y botones.
+// pendientes ceden lugar respecto del reparto con Einstein: la derecha apila
+// calendario, clima y botones, y la franja de conversacion va debajo de agenda
+// y pendientes, con el ancho de las dos.
 constexpr int kAgendaColumnWidth = 230;
 constexpr int kPendingColumnWidth = 230;
 constexpr int kDesignWidth = 800;
@@ -73,7 +74,10 @@ constexpr int kTalkButtonCompactHeight = 52;
 // Interlineado de la grilla del mes: en la 4.3C los renglones se pisan un poco
 // (los numeros no tienen descendentes) para que entre el resto de la columna.
 constexpr int kCalendarLineSpaceCompact = -4;
-constexpr int kConversationTextLineCount = 2;
+// Renglones de lo que oyo o dice Jarvis, debajo del estado. Alto fijo: una
+// respuesta larga se corta con puntos suspensivos y no le roba lugar a la
+// agenda ni a los pendientes (que se quedan con el resto del alto).
+constexpr int kConversationTextLineCount = 4;
 // Botones - y + de los mosaicos de clima, y cuanto mas alla del borde se acepta
 // el dedo. Los objetivos chicos se agrandan al tocar, no al dibujar.
 constexpr int kClimateButtonSize = 44;
@@ -386,8 +390,23 @@ void JarvisDashboardDisplay::BuildOverviewView(lv_obj_t* parent) {
     lv_obj_set_flex_grow(overview_view_, 1);
     lv_obj_set_style_pad_column(overview_view_, kGap, 0);
 
-    BuildAgendaColumn(overview_view_);
-    BuildPendingColumn(overview_view_);
+    // A la izquierda, agenda y pendientes lado a lado y la franja de
+    // conversacion abajo, con el ancho de las dos. Las tarjetas se quedan con
+    // el alto que deja la franja (ver AgendaCapacity).
+    lv_obj_t* main_area = MakeTransparentBox(overview_view_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_size(main_area,
+                    ScaledWidth(kAgendaColumnWidth) + kGap + ScaledWidth(kPendingColumnWidth),
+                    LV_PCT(100));
+    lv_obj_set_style_pad_row(main_area, kGap, 0);
+
+    lv_obj_t* card_row = MakeTransparentBox(main_area, LV_FLEX_FLOW_ROW);
+    lv_obj_set_width(card_row, LV_PCT(100));
+    lv_obj_set_flex_grow(card_row, 1);
+    lv_obj_set_style_pad_column(card_row, kGap, 0);
+
+    BuildAgendaColumn(card_row);
+    BuildPendingColumn(card_row);
+    BuildConversationStrip(main_area);
     BuildSideColumn(overview_view_);
 }
 
@@ -396,12 +415,15 @@ void JarvisDashboardDisplay::BuildAgendaColumn(lv_obj_t* parent) {
     lv_obj_set_size(column, ScaledWidth(kAgendaColumnWidth), LV_PCT(100));
 
     // El clima se fue a la columna de la derecha: la agenda tiene la columna
-    // entera y entran mas eventos (los que mande el servidor, hasta seis).
+    // entera, menos la franja de conversacion. El cuerpo se estira hasta el
+    // fondo de la tarjeta para poder medir cuantos eventos entran enteros.
     lv_obj_t* agenda = MakeTile(column, lv_color_hex(kColorTangerine), "AGENDA");
     lv_obj_set_flex_grow(agenda, 1);
     lv_obj_t* agenda_body = MakeTransparentBox(agenda, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_size(agenda_body, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_width(agenda_body, LV_PCT(100));
+    lv_obj_set_flex_grow(agenda_body, 1);
     lv_obj_set_style_pad_row(agenda_body, 4, 0);
+    agenda_body_ = agenda_body;
 
     for (int slot = 0; slot < kAgendaSlotCount; slot++) {
         agenda_title_list_[slot] = lv_label_create(agenda_body);
@@ -472,13 +494,13 @@ void JarvisDashboardDisplay::BuildSideColumn(lv_obj_t* parent) {
     lv_obj_set_height(column, LV_PCT(100));
     lv_obj_set_flex_grow(column, 1);
     lv_obj_set_style_pad_row(column, IsCompactScreen() ? 6 : kGap, 0);
+    side_column_ = column;
 
     // De arriba hacia abajo, como en docs/vistas-tablero.md. El calendario se
     // queda con lo que sobre: la lista de eventos de hoy es lo primero que
     // cede si no hay alto (ver TodayEventCapacity).
     BuildCalendarTile(column);
     BuildWeatherTile(column);
-    BuildConversationTile(column);
 #ifdef CONFIG_JARVIS_SCREEN_TALK_BUTTONS
     BuildTalkButtons(column);
 #endif
@@ -560,11 +582,22 @@ void JarvisDashboardDisplay::BuildWeatherTile(lv_obj_t* parent) {
     lv_obj_set_height(meta, LV_SIZE_CONTENT);
     lv_obj_set_flex_grow(meta, 1);
 
-    weather_cond_label_ = lv_label_create(meta);
-    lv_obj_set_width(weather_cond_label_, LV_PCT(100));
+    // Condicion y, al lado, el promedio del dolar blue. La condicion se estira
+    // y se corta con puntos: el dolar es corto y se ve siempre entero.
+    lv_obj_t* condition_row = MakeTransparentBox(meta, LV_FLEX_FLOW_ROW);
+    lv_obj_set_size(condition_row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_column(condition_row, 8, 0);
+
+    weather_cond_label_ = lv_label_create(condition_row);
+    lv_obj_set_flex_grow(weather_cond_label_, 1);
     lv_label_set_long_mode(weather_cond_label_, LV_LABEL_LONG_DOT);
     lv_label_set_text(weather_cond_label_, "");
     StyleTileText(weather_cond_label_, kColorInk);
+
+    weather_dollar_label_ = lv_label_create(condition_row);
+    lv_label_set_text(weather_dollar_label_, "");
+    StyleTileText(weather_dollar_label_, kColorGreen);
+    lv_obj_add_flag(weather_dollar_label_, LV_OBJ_FLAG_HIDDEN);
 
     weather_detail_label_ = lv_label_create(meta);
     lv_obj_set_width(weather_detail_label_, LV_PCT(100));
@@ -574,13 +607,15 @@ void JarvisDashboardDisplay::BuildWeatherTile(lv_obj_t* parent) {
 }
 
 // La franja de conversacion es lo que antes decia Einstein: el estado del turno
-// arriba y lo que oyo o dice Jarvis abajo.
-void JarvisDashboardDisplay::BuildConversationTile(lv_obj_t* parent) {
+// arriba y lo que oyo o dice Jarvis abajo. Va debajo de agenda y pendientes,
+// con el ancho de las dos; la columna de la derecha ya no la lleva.
+void JarvisDashboardDisplay::BuildConversationStrip(lv_obj_t* parent) {
     const bool compact = IsCompactScreen();
     lv_obj_t* tile = MakeTile(parent, lv_color_hex(kColorTurquoise), nullptr);
     lv_obj_set_height(tile, LV_SIZE_CONTENT);
     lv_obj_set_style_pad_ver(tile, compact ? 6 : 8, 0);
     lv_obj_set_style_pad_row(tile, 2, 0);
+    conversation_strip_ = tile;
 
     // status_label_ y notification_label_ son de la clase base: LvglDisplay los
     // muestra y esconde entre si, y dereferencia UNO SIN CHEQUEAR NULL cuando
@@ -600,8 +635,9 @@ void JarvisDashboardDisplay::BuildConversationTile(lv_obj_t* parent) {
     StyleTileText(notification_label_, kColorInk);
     lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
 
-    // Alto fijo de dos renglones con puntos suspensivos: una respuesta larga no
-    // empuja los botones fuera de la pantalla.
+    // Alto fijo de kConversationTextLineCount renglones, con salto de linea
+    // automatico y puntos suspensivos al final del ultimo: una respuesta larga
+    // se corta prolija y no agranda la franja.
     conversation_say_label_ = lv_label_create(tile);
     lv_label_set_text(conversation_say_label_, "");
     lv_obj_set_width(conversation_say_label_, LV_PCT(100));
@@ -1069,18 +1105,22 @@ void JarvisDashboardDisplay::SetupUI() {
                  (int)tab_area.y1, (int)tab_area.x2, (int)tab_area.y2);
     }
 
-    lv_obj_t* side_column = lv_obj_get_child(overview_view_, 2);
     lv_obj_t* calendar_tile = lv_obj_get_parent(today_event_area_);
+    lv_obj_t* agenda_tile = lv_obj_get_parent(agenda_body_);
     const size_t internal_free_after = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     ESP_LOGI(TAG,
              "tablero armado: %dx%d (container %dx%d) derecha %dx%d, calendario %dx%d, "
-             "eventos de hoy %d de %d, conversacion %d, mosaico %dx%d, RAM interna %u -> %u",
+             "eventos de hoy %d de %d, agenda %dx%d con %d de %d eventos, "
+             "conversacion %dx%d con %d de %d renglones, mosaico %dx%d, RAM interna %u -> %u",
              LV_HOR_RES, LV_VER_RES, (int)lv_obj_get_width(container_),
-             (int)lv_obj_get_height(container_), (int)lv_obj_get_width(side_column),
-             (int)lv_obj_get_height(side_column), (int)lv_obj_get_width(calendar_tile),
+             (int)lv_obj_get_height(container_), (int)lv_obj_get_width(side_column_),
+             (int)lv_obj_get_height(side_column_), (int)lv_obj_get_width(calendar_tile),
              (int)lv_obj_get_height(calendar_tile), TodayEventCapacity(), kTodayEventSlotCount,
-             (int)lv_obj_get_height(lv_obj_get_parent(conversation_say_label_)), tile_width,
-             tile_height, (unsigned)internal_free_before, (unsigned)internal_free_after);
+             (int)lv_obj_get_width(agenda_tile), (int)lv_obj_get_height(agenda_tile),
+             AgendaCapacity(), kAgendaSlotCount, (int)lv_obj_get_width(conversation_strip_),
+             (int)lv_obj_get_height(conversation_strip_), ConversationLineCapacity(),
+             kConversationTextLineCount, tile_width, tile_height, (unsigned)internal_free_before,
+             (unsigned)internal_free_after);
 }
 
 // LcdDisplay::SetTheme repinta la UI de chat entera y toca `emoji_label_`,
@@ -1167,6 +1207,30 @@ int JarvisDashboardDisplay::TodayEventCapacity() {
     const int line_height = std::max(1, LineHeightOf(today_event_area_));
     const int capacity = (int)lv_obj_get_content_height(today_event_area_) / line_height;
     return std::min(std::max(capacity, 0), (int)kTodayEventSlotCount);
+}
+
+// Mismo criterio para la agenda, que perdio alto con la franja de conversacion
+// abajo: cada evento son dos renglones (titulo y cuando) y los que no entran
+// enteros se esconden. En la P4-7B entran los seis; en la 4.3C, menos.
+int JarvisDashboardDisplay::AgendaCapacity() {
+    if (agenda_body_ == nullptr) {
+        return 0;
+    }
+    const int line_height = std::max(1, LineHeightOf(agenda_body_));
+    const int row_gap = (int)lv_obj_get_style_pad_row(agenda_body_, LV_PART_MAIN);
+    // n eventos = 2n renglones con 2n-1 separaciones entre ellos.
+    const int capacity = ((int)lv_obj_get_content_height(agenda_body_) + row_gap) /
+                         std::max(1, 2 * (line_height + row_gap));
+    return std::min(std::max(capacity, 0), (int)kAgendaSlotCount);
+}
+
+// Renglones de texto que entran en la franja de conversacion (para el log).
+int JarvisDashboardDisplay::ConversationLineCapacity() {
+    if (conversation_say_label_ == nullptr) {
+        return 0;
+    }
+    const int line_height = std::max(1, LineHeightOf(conversation_say_label_));
+    return (int)lv_obj_get_content_height(conversation_say_label_) / line_height;
 }
 
 void JarvisDashboardDisplay::ApplyMonthCalendar(const DashboardData& data) {
@@ -1283,7 +1347,12 @@ void JarvisDashboardDisplay::ApplyHome(const DashboardData& data) {
         SetLabelText(dollar_buy_label_, FormatPesos(data.dollar_buy).c_str());
         SetLabelText(dollar_sell_label_, FormatPesos(data.dollar_sell).c_str());
         SetLabelText(dollar_updated_label_, data.dollar_updated_label.c_str());
+        // En Inicio, al lado del clima: el promedio de compra y venta.
+        const std::string average =
+            "Blue " + FormatPesos((data.dollar_buy + data.dollar_sell) / 2.0);
+        SetLabelText(weather_dollar_label_, average.c_str());
     }
+    SetHidden(weather_dollar_label_, !data.has_dollar_blue);
 }
 
 void JarvisDashboardDisplay::PaintHomeTile(int slot) {
@@ -1364,8 +1433,9 @@ void JarvisDashboardDisplay::SetDashboardData(const DashboardData& data) {
 
     ApplyWeather(data);
 
+    const int agenda_capacity = AgendaCapacity();
     for (int slot = 0; data.agenda_present && slot < kAgendaSlotCount; slot++) {
-        const bool used = slot < (int)data.agenda_list.size();
+        const bool used = slot < agenda_capacity && slot < (int)data.agenda_list.size();
         if (used) {
             SetLabelText(agenda_title_list_[slot], data.agenda_list[slot].title.c_str());
             SetLabelText(agenda_when_list_[slot], data.agenda_list[slot].when_label.c_str());

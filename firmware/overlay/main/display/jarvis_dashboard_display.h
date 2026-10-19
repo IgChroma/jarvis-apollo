@@ -21,11 +21,12 @@
 //   | AGENDA         | PENDIENTES  4  | OCTUBRE 2026         |
 //   | Reunion Nico   | - Mejorar UI   | L  M  M  J  V  S  D  |
 //   | en 40 minutos  | - Scheduler    | ...  (18)  ...       |
-//   |                | - Localhost    | 18:30 Dentista       |
-//   |                |                | 21°  Nublado         |
-//   |                |                | Escuchando...        |
-//   |                | AL CENTRO 24'  | [Hablar]  [Enviar]   |
-//   +----------------+----------------+----------------------+
+//   |                | AL CENTRO 24'  | 18:30 Dentista       |
+//   +----------------+----------------+                      |
+//   | Escuchando...                   | 21° Nublado Blue $1. |
+//   | lo que oyo o dice Jarvis,       |                      |
+//   | hasta cuatro renglones...       | [Hablar]  [Enviar]   |
+//   +---------------------------------+----------------------+
 //
 // Casa: una grilla de hasta 12 mosaicos de Home Assistant (4x3) y una franja
 // con el dólar blue abajo.
@@ -210,7 +211,7 @@ private:
     void BuildSideColumn(lv_obj_t* parent);
     void BuildCalendarTile(lv_obj_t* parent);
     void BuildWeatherTile(lv_obj_t* parent);
-    void BuildConversationTile(lv_obj_t* parent);
+    void BuildConversationStrip(lv_obj_t* parent);
     void BuildTalkButtons(lv_obj_t* parent);
     void BuildHouseView(lv_obj_t* parent);
     void BuildHomeTile(lv_obj_t* parent, int slot);
@@ -228,6 +229,8 @@ private:
     void ApplyHome(const DashboardData& data);
     void PaintHomeTile(int slot);
     int TodayEventCapacity();
+    int AgendaCapacity();
+    int ConversationLineCapacity();
 
     // Barra superior
     lv_obj_t* clock_label_ = nullptr;
@@ -242,6 +245,7 @@ private:
     // Las filas se crean UNA VEZ y despues solo se les cambia el texto. Antes
     // se hacia lv_obj_clean + recrear en cada actualizacion: el flex recalculaba
     // todo el arbol y las cajas saltaban y parpadeaban.
+    lv_obj_t* agenda_body_ = nullptr;
     lv_obj_t* agenda_title_list_[kAgendaSlotCount] = {};
     lv_obj_t* agenda_when_list_[kAgendaSlotCount] = {};
     lv_obj_t* pending_row_list_[kPendingSlotCount] = {};
@@ -253,6 +257,9 @@ private:
     lv_obj_t* weather_temp_label_ = nullptr;
     lv_obj_t* weather_cond_label_ = nullptr;
     lv_obj_t* weather_detail_label_ = nullptr;
+    // Promedio del dolar blue al lado de la condicion; viene en `home`.
+    lv_obj_t* weather_dollar_label_ = nullptr;
+    lv_obj_t* side_column_ = nullptr;
 
     // Calendario: una etiqueta por columna (dia de la semana) con los numeros
     // uno por renglon, en vez de 49 etiquetas sueltas. Hoy se marca con un
@@ -268,7 +275,9 @@ private:
     // y el tablero llega cada 10 s.
     std::string calendar_column_text_list_[kWeekdayCount];
 
-    // Franja de conversacion (reemplaza a Einstein).
+    // Franja de conversacion (reemplaza a Einstein): a lo ancho de agenda y
+    // pendientes, debajo de las dos.
+    lv_obj_t* conversation_strip_ = nullptr;
     lv_obj_t* conversation_say_label_ = nullptr;
     bool showing_thinking_ = false;
 
