@@ -227,9 +227,9 @@ private:
         // justamente SendGesture. Se veía como "pantalla negra que no responde"
         // con la placa perfectamente viva.
         //
-        // El tablero no tiene widgets que se toquen, así que NO se registra el
-        // touch en LVGL: dos tareas leyendo el mismo GT911 por I2C es pelearse
-        // por el bus para nada.
+        // NO se registra el touch en LVGL: los botones, pestañas y mosaicos
+        // del tablero los resuelve la misma tarea con HitTest, y dos tareas
+        // leyendo el mismo GT911 por I2C es pelearse por el bus para nada.
         JarvisTouchGestures::Start(tp, display_);
         ESP_LOGI(TAG, "Touch panel initialized successfully");
     }

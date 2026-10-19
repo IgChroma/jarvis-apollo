@@ -1505,25 +1505,11 @@ void Application::SendGesture(const std::string& gesture) {
             return;
         }
 
-        // Un recordatorio a pantalla completa se lleva el primer toque, sea el
-        // gesto que sea. Encaja con lo que un tap ya significa mas abajo: la
-        // forma de frenar algo que esta pasando.
-        //
         // Va ANTES del chequeo de protocol_: el recordatorio se tiene que poder
         // descartar aunque la conexion con el servidor se haya caido, que es
         // justo cuando peor seria quedarse con la pantalla tomada y sin salida.
-        {
-            auto* dashboard =
-                dynamic_cast<JarvisDashboardDisplay*>(Board::GetInstance().GetDisplay());
-            if (dashboard != nullptr && dashboard->IsReminderVisible()) {
-                dashboard->DismissReminder();
-                // Visto: el servidor ya no lo reenvia por WhatsApp.
-                auto* apollo = dynamic_cast<ApolloProtocol*>(protocol_.get());
-                if (apollo != nullptr) {
-                    apollo->SendReminderSeen();
-                }
-                return;
-            }
+        if (DismissReminderOnTouch()) {
+            return;
         }
 
         if (!protocol_) {
@@ -1557,6 +1543,58 @@ void Application::SendGesture(const std::string& gesture) {
             return;
         }
         protocol_->SendGesture(gesture);
+    });
+}
+
+// Un recordatorio a pantalla completa se lleva el primer toque, sea el gesto
+// que sea (tap, deslizar, una pestaña). Encaja con lo que un tap ya significa:
+// la forma de frenar algo que esta pasando.
+bool Application::DismissReminderOnTouch() {
+    auto* dashboard = dynamic_cast<JarvisDashboardDisplay*>(Board::GetInstance().GetDisplay());
+    if (dashboard == nullptr || !dashboard->IsReminderVisible()) {
+        return false;
+    }
+    dashboard->DismissReminder();
+    // Visto: el servidor ya no lo reenvia por WhatsApp.
+    auto* apollo = dynamic_cast<ApolloProtocol*>(protocol_.get());
+    if (apollo != nullptr) {
+        apollo->SendReminderSeen();
+    }
+    return true;
+}
+
+void Application::RunDashboardTouch(std::function<void()>&& action) {
+    Schedule([this, action = std::move(action)]() {
+        // Mismas reglas que SendGesture: con la pantalla apagada el toque solo
+        // la despierta (no prende una luz a ciegas), y un recordatorio arriba
+        // se lleva el toque.
+        const bool was_asleep = is_screen_asleep_;
+        NoteUserActivity();
+        if (was_asleep || DismissReminderOnTouch()) {
+            return;
+        }
+        action();
+    });
+}
+
+void Application::SendHaAction(const std::string& entity_id, const std::string& action) {
+    Schedule([this, entity_id, action]() {
+        if (!protocol_) {
+            return;
+        }
+        auto* apollo = dynamic_cast<ApolloProtocol*>(protocol_.get());
+        if (apollo == nullptr) {
+            ESP_LOGW(TAG, "ha_action '%s' dropped: protocol is not Apollo", action.c_str());
+            return;
+        }
+        // Un mosaico se toca sobre todo con la placa en reposo, que es cuando
+        // el canal puede estar cerrado.
+        if (!protocol_->IsAudioChannelOpened() && !protocol_->OpenAudioChannel()) {
+            ESP_LOGW(TAG, "ha_action '%s' %s dropped: no channel", action.c_str(),
+                     entity_id.c_str());
+            return;
+        }
+        apollo->SendHaAction(entity_id, action.c_str());
     });
 }
 

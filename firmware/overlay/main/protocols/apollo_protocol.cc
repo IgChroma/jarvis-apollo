@@ -93,6 +93,30 @@ std::string_view MapEffectNameToSound(const char* effect_name) {
     return {};
 }
 
+// Las fuentes Noto "basic" de la placa no traen el "…" (U+2026) ni la raya
+// (U+2014), y el servidor los usa: corta los textos largos con "…" y un sensor
+// no disponible vale "—". Sin esto se dibujaban como un hueco.
+std::string DisplayText(const char* text) {
+    std::string result = text == nullptr ? "" : text;
+    struct Replacement {
+        const char* from;
+        const char* to;
+    };
+    static const Replacement kReplacementList[] = {
+        {"â¦", "..."},  // …
+        {"â", "-"},    // —
+    };
+    for (const auto& replacement : kReplacementList) {
+        size_t position = 0;
+        const size_t from_length = strlen(replacement.from);
+        while ((position = result.find(replacement.from, position)) != std::string::npos) {
+            result.replace(position, from_length, replacement.to);
+            position += strlen(replacement.to);
+        }
+    }
+    return result;
+}
+
 }  // namespace
 
 ApolloProtocol::ApolloProtocol() {}
@@ -230,6 +254,28 @@ void ApolloProtocol::SendGesture(const std::string& gesture) {
     cJSON_Delete(root);
 
     ESP_LOGI(TAG, "Gesture '%s' -> %s", gesture.c_str(), message.c_str());
+    SendText(message);
+}
+
+// Toque en un mosaico de la vista Casa (docs/vistas-tablero.md). El servidor
+// llama a Home Assistant y empuja el tablero enseguida con el estado nuevo.
+void ApolloProtocol::SendHaAction(const std::string& entity_id, const char* action) {
+    if (websocket_ == nullptr || !websocket_->IsConnected()) {
+        return;
+    }
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "ha_action");
+    cJSON_AddStringToObject(root, "entityId", entity_id.c_str());
+    cJSON_AddStringToObject(root, "action", action);
+    cJSON_AddNumberToObject(root, "ts", NowMilliseconds());
+
+    auto serialized = cJSON_PrintUnformatted(root);
+    std::string message(serialized);
+    cJSON_free(serialized);
+    cJSON_Delete(root);
+
+    ESP_LOGI(TAG, "Home Assistant -> %s", message.c_str());
     SendText(message);
 }
 
@@ -420,9 +466,30 @@ void ApolloProtocol::HandleDashboard(const cJSON* root) {
             // El servidor manda el valor crudo: redondear es decision de la
             // pantalla. lround y no truncar, para que 8.6 sea 9 y no 8.
             data.temperature_c = (int)lround(temperature->valuedouble);
-            data.condition_label = condition->valuestring;
+            data.condition_label = DisplayText(condition->valuestring);
             if (cJSON_IsString(place)) {
-                data.place_label = place->valuestring;
+                data.place_label = DisplayText(place->valuestring);
+            }
+            // Solo vienen con el clima de Home Assistant (open-meteo no los
+            // tiene): cada uno se dibuja si esta.
+            auto condition_code = cJSON_GetObjectItem(weather, "conditionCode");
+            auto min_c = cJSON_GetObjectItem(weather, "minC");
+            auto max_c = cJSON_GetObjectItem(weather, "maxC");
+            auto humidity = cJSON_GetObjectItem(weather, "humidityPercent");
+            if (cJSON_IsString(condition_code)) {
+                data.condition_code = condition_code->valuestring;
+            }
+            if (cJSON_IsNumber(min_c)) {
+                data.has_min = true;
+                data.min_c = (int)lround(min_c->valuedouble);
+            }
+            if (cJSON_IsNumber(max_c)) {
+                data.has_max = true;
+                data.max_c = (int)lround(max_c->valuedouble);
+            }
+            if (cJSON_IsNumber(humidity)) {
+                data.has_humidity = true;
+                data.humidity_percent = (int)lround(humidity->valuedouble);
             }
         }
     }
@@ -435,7 +502,8 @@ void ApolloProtocol::HandleDashboard(const cJSON* root) {
             auto title = cJSON_GetObjectItem(entry, "title");
             auto when_label = cJSON_GetObjectItem(entry, "whenLabel");
             if (cJSON_IsString(title) && cJSON_IsString(when_label)) {
-                data.agenda_list.push_back({title->valuestring, when_label->valuestring});
+                data.agenda_list.push_back(
+                    {DisplayText(title->valuestring), DisplayText(when_label->valuestring)});
             }
         }
     }
@@ -455,7 +523,7 @@ void ApolloProtocol::HandleDashboard(const cJSON* root) {
             cJSON* item = nullptr;
             cJSON_ArrayForEach(item, item_list) {
                 if (cJSON_IsString(item)) {
-                    data.pending_item_list.push_back(item->valuestring);
+                    data.pending_item_list.push_back(DisplayText(item->valuestring));
                 }
             }
         }
@@ -468,16 +536,127 @@ void ApolloProtocol::HandleDashboard(const cJSON* root) {
         auto minutes = cJSON_GetObjectItem(travel, "minutes");
         if (cJSON_IsString(label) && cJSON_IsNumber(minutes)) {
             data.has_travel = true;
-            data.travel_label = label->valuestring;
+            data.travel_label = DisplayText(label->valuestring);
             data.travel_minutes = minutes->valueint;
         }
     }
 
-    ESP_LOGI(TAG, "dashboard: clima=%d agenda=%d(%d) pend=%d(%d de %d) viaje=%d",
+    // Calendario del mes (vista Inicio). Ausente = "este emisor no lo sabe";
+    // presente pero mal formado = se dibuja vacio.
+    auto month_calendar = cJSON_GetObjectItem(root, "monthCalendar");
+    data.month_calendar_present = cJSON_IsObject(month_calendar);
+    if (data.month_calendar_present) {
+        auto year = cJSON_GetObjectItem(month_calendar, "year");
+        auto month = cJSON_GetObjectItem(month_calendar, "month");
+        auto today_day = cJSON_GetObjectItem(month_calendar, "todayDay");
+        auto first_weekday = cJSON_GetObjectItem(month_calendar, "firstWeekday");
+        auto day_count = cJSON_GetObjectItem(month_calendar, "dayCount");
+        if (cJSON_IsNumber(year) && cJSON_IsNumber(month) && cJSON_IsNumber(today_day) &&
+            cJSON_IsNumber(first_weekday) && cJSON_IsNumber(day_count)) {
+            data.has_month_calendar = true;
+            data.calendar_year = year->valueint;
+            data.calendar_month = month->valueint;
+            data.calendar_today_day = today_day->valueint;
+            data.calendar_first_weekday = first_weekday->valueint;
+            data.calendar_day_count = day_count->valueint;
+        }
+        auto event_day_list = cJSON_GetObjectItem(month_calendar, "eventDayList");
+        if (cJSON_IsArray(event_day_list)) {
+            cJSON* day = nullptr;
+            cJSON_ArrayForEach(day, event_day_list) {
+                if (cJSON_IsNumber(day)) {
+                    data.calendar_event_day_list.push_back(day->valueint);
+                }
+            }
+        }
+        auto today_event_list = cJSON_GetObjectItem(month_calendar, "todayEventList");
+        if (cJSON_IsArray(today_event_list)) {
+            cJSON* event = nullptr;
+            cJSON_ArrayForEach(event, today_event_list) {
+                auto time_label = cJSON_GetObjectItem(event, "timeLabel");
+                auto title = cJSON_GetObjectItem(event, "title");
+                if (cJSON_IsString(time_label) && cJSON_IsString(title)) {
+                    data.calendar_today_event_list.push_back(
+                        {DisplayText(time_label->valuestring), DisplayText(title->valuestring)});
+                }
+            }
+        }
+    }
+
+    // Vista Casa. `home` presente con la lista vacia SI es "no hay mosaicos":
+    // la pantalla muestra como etiquetarlos en Home Assistant.
+    auto home = cJSON_GetObjectItem(root, "home");
+    data.home_present = cJSON_IsObject(home);
+    if (data.home_present) {
+        auto tile_list = cJSON_GetObjectItem(home, "tileList");
+        if (cJSON_IsArray(tile_list)) {
+            cJSON* entry = nullptr;
+            cJSON_ArrayForEach(entry, tile_list) {
+                auto entity_id = cJSON_GetObjectItem(entry, "entityId");
+                auto name = cJSON_GetObjectItem(entry, "name");
+                auto kind = cJSON_GetObjectItem(entry, "kind");
+                if (!cJSON_IsString(entity_id) || !cJSON_IsString(name) || !cJSON_IsString(kind)) {
+                    continue;
+                }
+                JarvisDashboardDisplay::HomeTile tile;
+                tile.entity_id = entity_id->valuestring;
+                tile.name = DisplayText(name->valuestring);
+                // Sin la clave se asume disponible: el esquema la exige, y un
+                // mosaico gris por un campo faltante confunde mas que ayuda.
+                auto available = cJSON_GetObjectItem(entry, "available");
+                tile.available = !cJSON_IsBool(available) || cJSON_IsTrue(available);
+                if (strcmp(kind->valuestring, "toggle") == 0) {
+                    tile.kind = JarvisDashboardDisplay::HomeTileKind::kToggle;
+                    tile.is_on = cJSON_IsTrue(cJSON_GetObjectItem(entry, "isOn"));
+                } else if (strcmp(kind->valuestring, "sensor") == 0) {
+                    tile.kind = JarvisDashboardDisplay::HomeTileKind::kSensor;
+                    auto value = cJSON_GetObjectItem(entry, "value");
+                    auto unit = cJSON_GetObjectItem(entry, "unit");
+                    tile.value = cJSON_IsString(value) ? DisplayText(value->valuestring) : "--";
+                    if (cJSON_IsString(unit)) {
+                        tile.unit = DisplayText(unit->valuestring);
+                    }
+                } else if (strcmp(kind->valuestring, "climate") == 0) {
+                    tile.kind = JarvisDashboardDisplay::HomeTileKind::kClimate;
+                    auto current = cJSON_GetObjectItem(entry, "currentC");
+                    auto target = cJSON_GetObjectItem(entry, "targetC");
+                    auto hvac_mode = cJSON_GetObjectItem(entry, "hvacMode");
+                    tile.has_current = cJSON_IsNumber(current);
+                    tile.current_c = tile.has_current ? (float)current->valuedouble : 0;
+                    tile.has_target = cJSON_IsNumber(target);
+                    tile.target_c = tile.has_target ? (float)target->valuedouble : 0;
+                    if (cJSON_IsString(hvac_mode)) {
+                        tile.hvac_mode = hvac_mode->valuestring;
+                    }
+                } else {
+                    // Un tipo que este firmware no conoce no se dibuja a medias.
+                    continue;
+                }
+                data.home_tile_list.push_back(std::move(tile));
+            }
+        }
+        auto dollar_blue = cJSON_GetObjectItem(home, "dollarBlue");
+        if (cJSON_IsObject(dollar_blue)) {
+            auto buy = cJSON_GetObjectItem(dollar_blue, "buy");
+            auto sell = cJSON_GetObjectItem(dollar_blue, "sell");
+            auto updated_label = cJSON_GetObjectItem(dollar_blue, "updatedLabel");
+            if (cJSON_IsNumber(buy) && cJSON_IsNumber(sell)) {
+                data.has_dollar_blue = true;
+                data.dollar_buy = buy->valuedouble;
+                data.dollar_sell = sell->valuedouble;
+                if (cJSON_IsString(updated_label)) {
+                    data.dollar_updated_label = DisplayText(updated_label->valuestring);
+                }
+            }
+        }
+    }
+
+    ESP_LOGI(TAG, "dashboard: clima=%d agenda=%d(%d) pend=%d(%d de %d) viaje=%d mes=%d casa=%d(%d)",
              (int)data.weather_present, (int)data.agenda_present,
              (int)data.agenda_list.size(), (int)data.pending_present,
              (int)data.pending_item_list.size(), data.pending_count,
-             (int)data.travel_present);
+             (int)data.travel_present, (int)data.month_calendar_present,
+             (int)data.home_present, (int)data.home_tile_list.size());
     dashboard->SetDashboardData(data);
 }
 
@@ -491,17 +670,8 @@ void ApolloProtocol::HandleUiState(const cJSON* root) {
         Application::GetInstance().DismissConfirm();
     }
 
-    // El animo de la respuesta va ANTES de la emocion: asi, cuando la cara pasa
-    // a "hablando", ya sabe con que animacion hacerlo. Solo lo trae el estado
-    // speaking; sin el campo, la respuesta es neutra.
-    if (cJSON_IsString(state) && strcmp(state->valuestring, "speaking") == 0) {
-        auto* dashboard =
-            dynamic_cast<JarvisDashboardDisplay*>(Board::GetInstance().GetDisplay());
-        if (dashboard != nullptr) {
-            auto mood = cJSON_GetObjectItem(root, "mood");
-            dashboard->SetMood(cJSON_IsString(mood) ? mood->valuestring : nullptr);
-        }
-    }
+    // `mood` (el animo de la respuesta) lo usaba la cara de Einstein, que ya no
+    // esta en el tablero: se ignora.
 
     auto emotion = cJSON_GetObjectItem(root, "emotion");
     if (cJSON_IsString(emotion)) {

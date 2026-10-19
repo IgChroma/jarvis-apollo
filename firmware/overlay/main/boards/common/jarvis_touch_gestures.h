@@ -5,8 +5,13 @@
 //
 // El touch se consulta directo desde una tarea propia: los gestos necesitan el
 // trazo crudo del dedo, y es lo único que despierta la pantalla dormida
-// (SendGesture -> NoteUserActivity). NO se registra el touch en LVGL: dos
-// tareas leyendo el mismo controlador por I2C es pelearse por el bus para nada.
+// (SendGesture / RunDashboardTouch -> NoteUserActivity). NO se registra el
+// touch en LVGL: dos tareas leyendo el mismo controlador por I2C es pelearse
+// por el bus para nada. Los blancos del tablero (botones, pestañas, mosaicos)
+// se resuelven con JarvisDashboardDisplay::HitTest.
+//
+// Tap y doble tap siguen yendo al servidor como gesto; deslizar cambia de vista
+// en la placa y ya no viaja (docs/vistas-tablero.md).
 //
 // Portado del board 1.85C de Apollo (CST816S). Las lecturas van por la API
 // genérica esp_lcd_touch, así que sirve igual para el GT911 de las Waveshare.
@@ -59,9 +64,11 @@ private:
         uint32_t press_started_ms = 0;
         uint32_t pending_tap_ms = 0;  // 0 = no hay tap esperando su ventana
         bool is_hold_talking = false;
-        // Boton de la pantalla bajo el dedo al empezar la pulsacion.
-        using TalkButton = JarvisDashboardDisplay::TalkButton;
-        TalkButton press_button = TalkButton::kNone;
+        // Lo que habia bajo el dedo al empezar la pulsacion (boton, pestaña,
+        // mosaico). Se decide al apoyar y se ejecuta al soltar.
+        using TouchTarget = JarvisDashboardDisplay::TouchTarget;
+        using TargetKind = JarvisDashboardDisplay::TouchTargetKind;
+        TouchTarget press_target;
         auto* dashboard = dynamic_cast<JarvisDashboardDisplay*>(display_);
 
         while (true) {
@@ -95,6 +102,7 @@ private:
                     start_x = last_x = x;
                     start_y = last_y = y;
                     press_started_ms = now_ms;
+                    press_target = TouchTarget{};
                 } else if (is_pressed) {
                     last_x = x;
                     last_y = y;
@@ -111,16 +119,18 @@ private:
                 start_x = last_x = x;
                 start_y = last_y = y;
                 press_started_ms = now_ms;
-                press_button = dashboard != nullptr ? dashboard->HitTestTalkButtons(x, y)
-                                                    : TalkButton::kNone;
+                press_target = dashboard != nullptr ? dashboard->HitTest(x, y) : TouchTarget{};
             } else if (is_pressed) {
                 last_x = x;
                 last_y = y;
                 // Mantener apretado para hablar: graba cuando la pulsación ya es
                 // muy larga para ser un tap, y sigue hasta que se levanta el
                 // dedo. El dedo tiene que quedarse quieto, o esto secuestraría
-                // un swipe lento. Sobre Enviar un hold sigue siendo Enviar.
-                if (!is_hold_talking && press_button != TalkButton::kSend &&
+                // un swipe lento. Sobre Enviar, una pestaña o un mosaico, un
+                // hold sigue siendo eso: solo el fondo y Hablar graban.
+                const bool target_allows_hold = press_target.kind == TargetKind::kNone ||
+                                                press_target.kind == TargetKind::kTalk;
+                if (!is_hold_talking && target_allows_hold &&
                     now_ms - press_started_ms >= kHoldToTalkMs &&
                     abs(last_x - start_x) < kTapMaxTravelPx &&
                     abs(last_y - start_y) < kTapMaxTravelPx) {
@@ -142,32 +152,43 @@ private:
                     continue;
                 }
 
-                // Los botones responden al soltar, sin esperar la ventana de
-                // doble tap, y no llegan al servidor como gesto.
-                if (press_button != TalkButton::kNone) {
+                int dx = last_x - start_x;
+                int dy = last_y - start_y;
+                uint32_t held_ms = now_ms - press_started_ms;
+                const TouchTarget target = press_target;
+                press_target = TouchTarget{};
+
+                // Deslizar cambia de vista en la placa: ya no viaja al servidor
+                // (docs/vistas-tablero.md). Gana aunque el dedo haya arrancado
+                // sobre un mosaico o un boton: en Casa casi todo es mosaico.
+                if (abs(dx) >= kSwipeMinTravelPx && abs(dx) > abs(dy)) {
                     pending_tap_ms = 0;
-                    if (press_button == TalkButton::kTalk) {
-                        ESP_LOGI(kTag, "Talk button tap");
-                        Application::GetInstance().TalkButtonTap();
-                    } else {
-                        ESP_LOGI(kTag, "Send button tap");
-                        Application::GetInstance().TalkButtonSend();
+                    if (dashboard != nullptr) {
+                        // Dedo a la izquierda = la vista siguiente, como pasar
+                        // una pagina.
+                        const int step = dx < 0 ? 1 : -1;
+                        ESP_LOGI(kTag, "Swipe %s: cambia de vista", dx < 0 ? "left" : "right");
+                        Application::GetInstance().RunDashboardTouch(
+                            [dashboard, step]() { dashboard->ShowAdjacentView(step); });
                     }
-                    press_button = TalkButton::kNone;
                     was_pressed = is_pressed;
                     vTaskDelay(pdMS_TO_TICKS(kTouchPollMs));
                     continue;
                 }
 
-                int dx = last_x - start_x;
-                int dy = last_y - start_y;
-                uint32_t held_ms = now_ms - press_started_ms;
-
-                if (abs(dx) >= kSwipeMinTravelPx && abs(dx) > abs(dy)) {
+                // Los blancos de la pantalla responden al soltar, sin esperar la
+                // ventana de doble tap, y no llegan al servidor como gesto.
+                if (target.kind != TargetKind::kNone) {
                     pending_tap_ms = 0;
-                    EmitGesture(dx > 0 ? "swipe_right" : "swipe_left");
-                } else if (held_ms <= kTapMaxMs && abs(dx) < kTapMaxTravelPx &&
-                           abs(dy) < kTapMaxTravelPx) {
+                    HandleTarget(dashboard, target, abs(dx) < kTapMaxTravelPx &&
+                                                        abs(dy) < kTapMaxTravelPx);
+                    was_pressed = is_pressed;
+                    vTaskDelay(pdMS_TO_TICKS(kTouchPollMs));
+                    continue;
+                }
+
+                if (held_ms <= kTapMaxMs && abs(dx) < kTapMaxTravelPx &&
+                    abs(dy) < kTapMaxTravelPx) {
                     if (pending_tap_ms != 0) {
                         pending_tap_ms = 0;
                         EmitGesture("double_tap");
@@ -187,6 +208,48 @@ private:
             was_pressed = is_pressed;
             vTaskDelay(pdMS_TO_TICKS(kTouchPollMs));
         }
+    }
+
+    // `is_steady`: el dedo se quedo cerca de donde apoyo. Hablar y Enviar
+    // responden igual que siempre (cualquier soltada); una pestaña o un mosaico
+    // piden un toque limpio, porque un dedo que se arrastra por la grilla no
+    // quiso prender una luz.
+    static void HandleTarget(JarvisDashboardDisplay* dashboard,
+                             const JarvisDashboardDisplay::TouchTarget& target, bool is_steady) {
+        using TargetKind = JarvisDashboardDisplay::TouchTargetKind;
+        auto& app = Application::GetInstance();
+        switch (target.kind) {
+            case TargetKind::kTalk:
+                ESP_LOGI(kTag, "Talk button tap");
+                app.TalkButtonTap();
+                return;
+            case TargetKind::kSend:
+                ESP_LOGI(kTag, "Send button tap");
+                app.TalkButtonSend();
+                return;
+            default:
+                break;
+        }
+        if (!is_steady || dashboard == nullptr) {
+            return;
+        }
+        if (target.kind == TargetKind::kTab) {
+            const auto view = static_cast<JarvisDashboardDisplay::View>(target.index);
+            ESP_LOGI(kTag, "Tab %d", target.index);
+            app.RunDashboardTouch([dashboard, view]() { dashboard->ShowView(view); });
+            return;
+        }
+        // Mosaico de Casa: el estado se pinta en la tarea principal, justo
+        // antes de mandar la accion, para que pantalla y mensaje salgan del
+        // mismo mosaico aunque haya llegado un tablero nuevo en el medio.
+        ESP_LOGI(kTag, "Tile %d tap (kind %d)", target.index, (int)target.kind);
+        app.RunDashboardTouch([dashboard, target]() {
+            std::string entity_id;
+            const char* action = nullptr;
+            if (dashboard->ApplyTileAction(target, &entity_id, &action)) {
+                Application::GetInstance().SendHaAction(entity_id, action);
+            }
+        });
     }
 
     static void EmitGesture(const char* gesture) {

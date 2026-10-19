@@ -223,6 +223,15 @@ public:
     // most gestures are useful precisely when the device is sitting idle.
     void SendGesture(const std::string& gesture);
 
+    // Toques que resuelve el tablero en la placa (pestañas, deslizar entre
+    // vistas, mosaicos de Casa): no viajan como gesto. Corre `action` en la
+    // tarea principal, salvo que el toque solo despierte la pantalla o se lo
+    // lleve un recordatorio a pantalla completa. Seguro desde cualquier tarea.
+    void RunDashboardTouch(std::function<void()>&& action);
+    // Mosaico de la vista Casa -> mensaje `ha_action`. Abre el canal si hace
+    // falta, como SendGesture. Seguro desde cualquier tarea.
+    void SendHaAction(const std::string& entity_id, const std::string& action);
+
     // The confirm screen session. ShowConfirm and DismissConfirm are safe from
     // any task; the touch task polls IsConfirmActive and answers through
     // OnConfirmTouchRelease.
@@ -259,6 +268,9 @@ private:
     void EnableWakeWordIfAllowed(bool enable);
     // Los botones de la pantalla reflejan si el micrófono está abierto.
     void UpdateScreenTalkButtons(bool listening);
+    // Un toque con el recordatorio a pantalla completa arriba lo descarta (y
+    // avisa al servidor) en vez de hacer lo suyo. Solo en la tarea principal.
+    bool DismissReminderOnTouch();
 
     std::atomic<bool> confirm_active_{false};
     esp_timer_handle_t confirm_expiry_timer_ = nullptr;

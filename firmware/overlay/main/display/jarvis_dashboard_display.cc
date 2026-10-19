@@ -3,20 +3,34 @@
 // lcd_display.h no arrastra el tema: LvglTheme vive en su propio header, igual
 // que lo incluye lcd_display.cc.
 #include "lvgl_theme.h"
+#include "application.h"
 #include "assets/lang_config.h"
-#include "assets.h"
 
+#include <esp_heap_caps.h>
 #include <esp_log.h>
-#include <esp_random.h>
 #include <esp_timer.h>
 #include <time.h>
 
+#include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
 
 #define TAG "JarvisDashboard"
+
+// Fuente grande para los numeros que se leen de lejos (temperatura, valores de
+// los mosaicos, dolar). Es la Noto Sans de 30 px que ya trae el componente
+// xiaozhi-fonts; el linker solo suma ese objeto (unos 240 KB de flash).
+//
+// Es la UNICA fuente que el tablero fija en el estilo local, y es a proposito:
+// la regla de "heredar siempre" existe porque Assets::Apply LIBERA la fuente
+// del tema al cambiarla, y un label que la apuntaba queda colgando. Esta vive
+// en flash, es `const` y nadie la libera nunca: no tiene ese problema.
+LV_FONT_DECLARE(font_noto_sans_basic_30_4);
 
 namespace {
 
@@ -31,67 +45,78 @@ constexpr uint32_t kColorDim = 0xA8BFBC;
 constexpr uint32_t kColorTurquoise = 0x2DD4BF;  // la respuesta escribiendose
 constexpr uint32_t kColorTangerine = 0xF97316;  // agenda y recordatorios
 constexpr uint32_t kColorViolet = 0xA855F7;     // memoria y listas
-constexpr uint32_t kColorGreen = 0x22C55E;      // lugares y viajes
+constexpr uint32_t kColorGreen = 0x22C55E;      // lugares, viajes y plata
 constexpr uint32_t kColorSky = 0x38BDF8;        // clima
+constexpr uint32_t kColorAmber = 0xFACC15;      // un interruptor prendido
+constexpr uint32_t kColorTileOn = 0x3A3416;     // fondo del mosaico prendido
 
 constexpr int kClockTickPeriodMicroseconds = 10 * 1000 * 1000;
 
-// Anchos del reparto aprobado, en pixeles del panel de 800. En otros anchos se
-// escalan (ScaledWidth); la columna de la mascota se queda con el resto.
-constexpr int kAgendaColumnWidth = 262;
-constexpr int kPendingColumnWidth = 288;
+// Anchos del reparto, en pixeles del panel de 800. En otros anchos se escalan
+// (ScaledWidth); la columna de la derecha se queda con el resto. Agenda y
+// pendientes ceden lugar respecto del reparto con Einstein: la derecha ahora
+// apila calendario, clima, conversacion y botones.
+constexpr int kAgendaColumnWidth = 230;
+constexpr int kPendingColumnWidth = 230;
 constexpr int kDesignWidth = 800;
 constexpr int kGap = 9;
 constexpr int kOuterPad = 10;
 constexpr int kStatusBarHeight = 34;
+
+// Las fuentes NO escalan con el panel (16 px en las dos placas), asi que el
+// alto no se reparte en proporcion: la 4.3C (480 de alto) va apretada y la
+// P4-7B (600) tiene aire. Por debajo de este alto se usa el reparto compacto.
+constexpr int kCompactScreenMaxHeight = 560;
 // Botones Hablar y Enviar: a la altura de un dedo, no de un cursor.
 constexpr int kTalkButtonHeight = 64;
+constexpr int kTalkButtonCompactHeight = 52;
+// Interlineado de la grilla del mes: en la 4.3C los renglones se pisan un poco
+// (los numeros no tienen descendentes) para que entre el resto de la columna.
+constexpr int kCalendarLineSpaceCompact = -4;
+constexpr int kConversationTextLineCount = 2;
+// Botones - y + de los mosaicos de clima, y cuanto mas alla del borde se acepta
+// el dedo. Los objetivos chicos se agrandan al tocar, no al dibujar.
+constexpr int kClimateButtonSize = 44;
+constexpr int kClimateButtonHitMargin = 8;
+constexpr int kTabHitMargin = 10;
+constexpr int kFallbackLineHeight = 23;
 
-// Einstein: 150x163, convertido de PicoPixel. Las duraciones son las del propio
-// sprite, no inventadas — ver deploy/esp32/assets/einstein/modes.json.
-constexpr int kPetFrameWidth = 150;
-constexpr int kPetFrameHeight = 163;
-constexpr uint32_t kPetIdleDurationMs = 1100;
-constexpr uint32_t kPetListeningDurationMs = 1010;
-constexpr uint32_t kPetThinkingDurationMs = 1030;
-constexpr uint32_t kPetTalkingDurationMs = 700;
-// Reacciones (animo de la respuesta) y el paseo: duraciones del propio sprite.
-constexpr uint32_t kPetJumpDurationMs = 840;
-constexpr uint32_t kPetFailDurationMs = 1060;
-constexpr uint32_t kPetRunDurationMs = 820;
-constexpr uint32_t kPetRunRightDurationMs = 1060;
+// Aspecto de un mosaico de Casa; se cachea para no tocar estilos sin cambio.
+constexpr int kTileLookNormal = 0;
+constexpr int kTileLookOn = 1;
+constexpr int kTileLookUnavailable = 2;
 
-// Vida en reposo. El loop de idle del sprite parpadea DOS veces cada 1,1 s, que
-// se lee como un tic nervioso: en reposo se muestra quieto (frame 0, ojos
-// abiertos) y se parpadea con el frame 1 (ojos cerrados) a intervalos al azar.
-constexpr int kPetRestFrame = 0;
-constexpr int kPetBlinkFrame = 1;
-constexpr uint32_t kIdleLifeTickMs = 100;
-constexpr uint32_t kBlinkClosedMs = 140;
-constexpr uint32_t kBlinkOpenGapMs = 110;
-constexpr uint32_t kBlinkMinGapMs = 2500;
-constexpr uint32_t kBlinkMaxGapMs = 7000;
-constexpr uint32_t kGestureMinGapMs = 25 * 1000;
-constexpr uint32_t kGestureMaxGapMs = 60 * 1000;
-constexpr uint32_t kWalkMinGapMs = 4 * 60 * 1000;
-constexpr uint32_t kWalkMaxGapMs = 8 * 60 * 1000;
-constexpr uint32_t kWalkLegMs = 1800;
+constexpr int kHomeGridColumnCount = 4;
+// LVGL guarda el puntero a los descriptores de la grilla: tienen que vivir
+// mientras viva el objeto, por eso son estaticos.
+const int32_t kHomeGridColumnList[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1),
+                                       LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
+const int32_t kHomeGridRowList[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1),
+                                    LV_GRID_TEMPLATE_LAST};
+
+const char* kMonthAbbreviationList[] = {"ene", "feb", "mar", "abr", "may", "jun",
+                                        "jul", "ago", "sep", "oct", "nov", "dic"};
+const char* kMonthNameList[] = {"ENERO",      "FEBRERO", "MARZO",     "ABRIL",
+                                "MAYO",       "JUNIO",   "JULIO",     "AGOSTO",
+                                "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"};
+const char* kWeekdayAbbreviationList[] = {"dom", "lun", "mar", "mie", "jue", "vie", "sab"};
+// La grilla del mes arranca el lunes, como el calendario argentino.
+const char* kCalendarWeekdayInitialList[] = {"L", "M", "M", "J", "V", "S", "D"};
+const char* kViewTabTextList[] = {"Inicio", "Casa"};
+const char* kThinkingStatusText = "Pensando...";
 
 // Ancho del diseño de 800 px llevado al panel real (1024 en la P4-7B).
 int ScaledWidth(int design_px) {
     return design_px * LV_HOR_RES / kDesignWidth;
 }
 
-void SetPetTranslateX(void* object, int32_t value) {
-    lv_obj_set_style_translate_x(static_cast<lv_obj_t*>(object), value, 0);
+bool IsCompactScreen() {
+    return LV_VER_RES < kCompactScreenMaxHeight;
 }
-// Cabecera del formato .bin de LVGLImage.py: magic + cf + flags + w + h + stride
-// + reservado. Los pixeles arrancan despues.
-constexpr size_t kLvglBinHeaderBytes = 12;
 
-const char* kMonthAbbreviationList[] = {"ene", "feb", "mar", "abr", "may", "jun",
-                                        "jul", "ago", "sep", "oct", "nov", "dic"};
-const char* kWeekdayAbbreviationList[] = {"dom", "lun", "mar", "mie", "jue", "vie", "sab"};
+const lv_font_t* BigFont() {
+    return &font_noto_sans_basic_30_4;
+}
 
 // Solo color: la fuente se HEREDA de la pantalla a proposito.
 //
@@ -102,6 +127,7 @@ const char* kWeekdayAbbreviationList[] = {"dom", "lun", "mar", "mie", "jue", "vi
 // las tarjetas, que se crean en MakeTile y de los que no se guarda puntero.
 //
 // Heredando, actualizar la fuente de la pantalla en SetTheme alcanza para todos.
+// (La unica excepcion es BigFont, que vive en flash: ver arriba.)
 void StyleTileText(lv_obj_t* label, uint32_t color) {
     if (label == nullptr) {
         return;
@@ -117,6 +143,108 @@ const lv_font_t* SafeFont(const std::shared_ptr<LvglFont>& font) {
     return font == nullptr ? nullptr : font->font();
 }
 
+// En el panel RGB (direct_mode + full_refresh) cualquier invalidacion repinta
+// la pantalla ENTERA, y el tablero llega cada 10 s casi siempre igual. Poner
+// el mismo texto o el mismo flag igual invalida, asi que se compara antes.
+void SetLabelText(lv_obj_t* label, const char* text) {
+    if (label == nullptr) {
+        return;
+    }
+    const char* shown = text == nullptr ? "" : text;
+    const char* current = lv_label_get_text(label);
+    if (current != nullptr && strcmp(current, shown) == 0) {
+        return;
+    }
+    lv_label_set_text(label, shown);
+}
+
+void SetHidden(lv_obj_t* object, bool hidden) {
+    if (object == nullptr || lv_obj_has_flag(object, LV_OBJ_FLAG_HIDDEN) == hidden) {
+        return;
+    }
+    if (hidden) {
+        lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_remove_flag(object, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+bool IsHidden(lv_obj_t* object) {
+    return object == nullptr || lv_obj_has_flag(object, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Coordenadas de pantalla; `margin` agranda el blanco para el dedo.
+bool IsInside(lv_obj_t* object, int x, int y, int margin) {
+    if (object == nullptr || IsHidden(object)) {
+        return false;
+    }
+    lv_area_t area;
+    lv_obj_get_coords(object, &area);
+    return x >= area.x1 - margin && x <= area.x2 + margin && y >= area.y1 - margin &&
+           y <= area.y2 + margin;
+}
+
+int LineHeightOf(lv_obj_t* object) {
+    const lv_font_t* font = lv_obj_get_style_text_font(object, LV_PART_MAIN);
+    return font == nullptr ? kFallbackLineHeight : lv_font_get_line_height(font);
+}
+
+// "21:04": lo que UpdateStatusBar pone en el estado mientras la placa reposa.
+bool IsClockText(const char* text) {
+    return text != nullptr && strlen(text) == 5 && isdigit((unsigned char)text[0]) &&
+           isdigit((unsigned char)text[1]) && text[2] == ':' &&
+           isdigit((unsigned char)text[3]) && isdigit((unsigned char)text[4]);
+}
+
+// 22.5 -> "22.5". Sin printf de flotantes: no depende de como se compilo newlib.
+std::string FormatTenths(float value) {
+    long tenths = lroundf(value * 10.0f);
+    const bool negative = tenths < 0;
+    tenths = labs(tenths);
+    char text[16];
+    snprintf(text, sizeof(text), "%s%ld.%ld", negative ? "-" : "", tenths / 10, tenths % 10);
+    return text;
+}
+
+// 1180 -> "$1.180", con el punto de miles de aca.
+std::string FormatPesos(double value) {
+    long amount = lround(value);
+    const bool negative = amount < 0;
+    std::string digits = std::to_string(labs(amount));
+    std::string grouped;
+    for (size_t index = 0; index < digits.size(); index++) {
+        if (index > 0 && (digits.size() - index) % 3 == 0) {
+            grouped += '.';
+        }
+        grouped += digits[index];
+    }
+    return std::string(negative ? "-$" : "$") + grouped;
+}
+
+const char* HvacModeLabel(const std::string& mode) {
+    if (mode == "off") return "Apagado";
+    if (mode == "heat") return "Calor";
+    if (mode == "cool") return "Frío";
+    if (mode == "heat_cool" || mode == "auto") return "Auto";
+    if (mode == "dry") return "Seco";
+    if (mode == "fan_only") return "Ventilador";
+    return mode.c_str();
+}
+
+// La fuente no tiene iconos de clima: la condicion tiñe la temperatura.
+uint32_t WeatherColorFor(const std::string& condition_code) {
+    if (condition_code == "sunny") {
+        return kColorAmber;
+    }
+    if (condition_code == "rainy" || condition_code == "pouring" ||
+        condition_code == "lightning" || condition_code == "lightning-rainy" ||
+        condition_code == "hail" || condition_code == "snowy" ||
+        condition_code == "snowy-rainy") {
+        return kColorSky;
+    }
+    return kColorInk;
+}
+
 }  // namespace
 
 JarvisDashboardDisplay::JarvisDashboardDisplay(esp_lcd_panel_io_handle_t panel_io,
@@ -127,10 +255,20 @@ JarvisDashboardDisplay::JarvisDashboardDisplay(esp_lcd_panel_io_handle_t panel_i
                     swap_xy),
       accent_color_(lv_color_hex(kColorTurquoise)) {}
 
+lv_obj_t* JarvisDashboardDisplay::MakeTransparentBox(lv_obj_t* parent, lv_flex_flow_t flow) {
+    lv_obj_t* box = lv_obj_create(parent);
+    lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(box, 0, 0);
+    lv_obj_set_style_radius(box, 0, 0);
+    lv_obj_set_style_pad_all(box, 0, 0);
+    lv_obj_set_flex_flow(box, flow);
+    lv_obj_set_scrollbar_mode(box, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+    return box;
+}
+
 lv_obj_t* JarvisDashboardDisplay::MakeTile(lv_obj_t* parent, lv_color_t accent,
                                            const char* heading) {
-    auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
-
     lv_obj_t* tile = lv_obj_create(parent);
     lv_obj_set_width(tile, LV_PCT(100));
     lv_obj_set_style_bg_color(tile, lv_color_hex(kColorTile), 0);
@@ -147,17 +285,11 @@ lv_obj_t* JarvisDashboardDisplay::MakeTile(lv_obj_t* parent, lv_color_t accent,
         // Encabezado: un cuadradito del color de la familia mas el rotulo. El
         // color es lo que distingue las tarjetas de un vistazo, ahora que la
         // fuente no dibuja emojis.
-        lv_obj_t* head = lv_obj_create(tile);
+        lv_obj_t* head = MakeTransparentBox(tile, LV_FLEX_FLOW_ROW);
         lv_obj_set_size(head, LV_PCT(100), LV_SIZE_CONTENT);
-        lv_obj_set_style_bg_opa(head, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(head, 0, 0);
-        lv_obj_set_style_pad_all(head, 0, 0);
         lv_obj_set_style_pad_column(head, 7, 0);
-        lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_scrollbar_mode(head, LV_SCROLLBAR_MODE_OFF);
-        lv_obj_clear_flag(head, LV_OBJ_FLAG_SCROLLABLE);
 
         lv_obj_t* swatch = lv_obj_create(head);
         lv_obj_set_size(swatch, 7, 7);
@@ -174,22 +306,15 @@ lv_obj_t* JarvisDashboardDisplay::MakeTile(lv_obj_t* parent, lv_color_t accent,
 
 void JarvisDashboardDisplay::BuildStatusBar(lv_obj_t* parent) {
     auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
-    auto text_font = SafeFont(lvgl_theme->text_font());
     auto icon_font = SafeFont(lvgl_theme->icon_font());
 
-    lv_obj_t* bar = lv_obj_create(parent);
+    lv_obj_t* bar = MakeTransparentBox(parent, LV_FLEX_FLOW_ROW);
     lv_obj_set_size(bar, LV_PCT(100), kStatusBarHeight);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(bar, 0, 0);
-    lv_obj_set_style_pad_all(bar, 0, 0);
     lv_obj_set_style_pad_left(bar, 6, 0);
     lv_obj_set_style_pad_right(bar, 6, 0);
     lv_obj_set_style_pad_column(bar, 12, 0);
-    lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_scrollbar_mode(bar, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
     clock_label_ = lv_label_create(bar);
     StyleTileText(clock_label_, kColorInk);
@@ -197,121 +322,106 @@ void JarvisDashboardDisplay::BuildStatusBar(lv_obj_t* parent) {
     date_label_ = lv_label_create(bar);
     StyleTileText(date_label_, kColorDim);
 
-    // Empuja los iconos al extremo derecho sin tener que calcular anchos.
-    lv_obj_t* spacer = lv_obj_create(bar);
-    lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(spacer, 0, 0);
-    lv_obj_set_height(spacer, 1);
-    lv_obj_set_flex_grow(spacer, 1);
+    // Dos separadores elasticos dejan las pestañas centradas entre la fecha y
+    // los iconos, sin calcular anchos.
+    auto make_spacer = [bar]() {
+        lv_obj_t* spacer = lv_obj_create(bar);
+        lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(spacer, 0, 0);
+        lv_obj_set_height(spacer, 1);
+        lv_obj_set_flex_grow(spacer, 1);
+    };
+    make_spacer();
+
+    // Pestañas: un label con fondo cada una, un objeto por pestaña. Se tocan
+    // como los botones (HitTest), no por LVGL.
+    for (int view = 0; view < kViewCount; view++) {
+        lv_obj_t* tab = lv_label_create(bar);
+        lv_label_set_text(tab, kViewTabTextList[view]);
+        lv_obj_set_style_pad_hor(tab, 16, 0);
+        lv_obj_set_style_pad_ver(tab, 3, 0);
+        lv_obj_set_style_radius(tab, 14, 0);
+        lv_obj_set_style_bg_opa(tab, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(tab, 1, 0);
+        lv_obj_set_style_border_color(tab, lv_color_hex(kColorTileLine), 0);
+        tab_label_list_[view] = tab;
+    }
+    PaintTabs();
+
+    make_spacer();
 
     // Los reusa la clase base: son los mismos objetos que actualiza
     // UpdateStatusBar con la señal de wifi y la bateria.
-    network_label_ = lv_label_create(bar);
-    lv_label_set_text(network_label_, "");
-    StyleTileText(network_label_, kColorDim);
-    if (icon_font != nullptr) {
-        lv_obj_set_style_text_font(network_label_, icon_font, 0);
-    }
-
-    mute_label_ = lv_label_create(bar);
-    lv_label_set_text(mute_label_, "");
-    StyleTileText(mute_label_, kColorDim);
-    if (icon_font != nullptr) {
-        lv_obj_set_style_text_font(mute_label_, icon_font, 0);
-    }
-
-    battery_label_ = lv_label_create(bar);
-    lv_label_set_text(battery_label_, "");
-    StyleTileText(battery_label_, kColorDim);
-    if (icon_font != nullptr) {
-        lv_obj_set_style_text_font(battery_label_, icon_font, 0);
+    lv_obj_t** const icon_slot_list[] = {&network_label_, &mute_label_, &battery_label_};
+    for (lv_obj_t** slot : icon_slot_list) {
+        *slot = lv_label_create(bar);
+        lv_label_set_text(*slot, "");
+        StyleTileText(*slot, kColorDim);
+        if (icon_font != nullptr) {
+            lv_obj_set_style_text_font(*slot, icon_font, 0);
+        }
     }
 
     RefreshClockLabel();
 }
 
+void JarvisDashboardDisplay::PaintTabs() {
+    for (int view = 0; view < kViewCount; view++) {
+        lv_obj_t* tab = tab_label_list_[view];
+        if (tab == nullptr) {
+            continue;
+        }
+        const bool is_current = view == (int)current_view_;
+        lv_obj_set_style_bg_color(tab, lv_color_hex(is_current ? kColorTurquoise : kColorTile),
+                                  0);
+        lv_obj_set_style_text_color(tab, lv_color_hex(is_current ? kColorScreen : kColorDim), 0);
+    }
+}
+
+void JarvisDashboardDisplay::BuildOverviewView(lv_obj_t* parent) {
+    overview_view_ = MakeTransparentBox(parent, LV_FLEX_FLOW_ROW);
+    lv_obj_set_width(overview_view_, LV_PCT(100));
+    lv_obj_set_flex_grow(overview_view_, 1);
+    lv_obj_set_style_pad_column(overview_view_, kGap, 0);
+
+    BuildAgendaColumn(overview_view_);
+    BuildPendingColumn(overview_view_);
+    BuildSideColumn(overview_view_);
+}
+
 void JarvisDashboardDisplay::BuildAgendaColumn(lv_obj_t* parent) {
-    auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
-    auto text_font = SafeFont(lvgl_theme->text_font());
-
-    lv_obj_t* column = lv_obj_create(parent);
+    lv_obj_t* column = MakeTransparentBox(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_size(column, ScaledWidth(kAgendaColumnWidth), LV_PCT(100));
-    lv_obj_set_style_bg_opa(column, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(column, 0, 0);
-    lv_obj_set_style_pad_all(column, 0, 0);
-    lv_obj_set_style_pad_row(column, kGap, 0);
-    lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_scrollbar_mode(column, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_clear_flag(column, LV_OBJ_FLAG_SCROLLABLE);
 
+    // El clima se fue a la columna de la derecha: la agenda tiene la columna
+    // entera y entran mas eventos (los que mande el servidor, hasta seis).
     lv_obj_t* agenda = MakeTile(column, lv_color_hex(kColorTangerine), "AGENDA");
     lv_obj_set_flex_grow(agenda, 1);
-    agenda_body_ = lv_obj_create(agenda);
-    lv_obj_set_size(agenda_body_, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(agenda_body_, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(agenda_body_, 0, 0);
-    lv_obj_set_style_pad_all(agenda_body_, 0, 0);
-    lv_obj_set_style_pad_row(agenda_body_, 4, 0);
-    lv_obj_set_flex_flow(agenda_body_, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_scrollbar_mode(agenda_body_, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_clear_flag(agenda_body_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t* agenda_body = MakeTransparentBox(agenda, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_size(agenda_body, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_row(agenda_body, 4, 0);
 
     for (int slot = 0; slot < kAgendaSlotCount; slot++) {
-        agenda_title_list_[slot] = lv_label_create(agenda_body_);
+        agenda_title_list_[slot] = lv_label_create(agenda_body);
         lv_obj_set_width(agenda_title_list_[slot], LV_PCT(100));
         lv_label_set_long_mode(agenda_title_list_[slot], LV_LABEL_LONG_DOT);
         lv_label_set_text(agenda_title_list_[slot], "");
         StyleTileText(agenda_title_list_[slot], kColorInk);
         lv_obj_add_flag(agenda_title_list_[slot], LV_OBJ_FLAG_HIDDEN);
 
-        agenda_when_list_[slot] = lv_label_create(agenda_body_);
+        agenda_when_list_[slot] = lv_label_create(agenda_body);
         lv_obj_set_width(agenda_when_list_[slot], LV_PCT(100));
         lv_label_set_long_mode(agenda_when_list_[slot], LV_LABEL_LONG_DOT);
         lv_label_set_text(agenda_when_list_[slot], "");
         StyleTileText(agenda_when_list_[slot], kColorTangerine);
         lv_obj_add_flag(agenda_when_list_[slot], LV_OBJ_FLAG_HIDDEN);
     }
-
-    lv_obj_t* weather = MakeTile(column, lv_color_hex(kColorSky), nullptr);
-    lv_obj_set_flex_flow(weather, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(weather, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(weather, 14, 0);
-
-    weather_temp_label_ = lv_label_create(weather);
-    lv_label_set_text(weather_temp_label_, "--");
-    StyleTileText(weather_temp_label_, kColorInk);
-
-    lv_obj_t* meta = lv_obj_create(weather);
-    lv_obj_set_size(meta, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(meta, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(meta, 0, 0);
-    lv_obj_set_style_pad_all(meta, 0, 0);
-    lv_obj_set_style_pad_row(meta, 1, 0);
-    lv_obj_set_flex_flow(meta, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_scrollbar_mode(meta, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_clear_flag(meta, LV_OBJ_FLAG_SCROLLABLE);
-
-    weather_cond_label_ = lv_label_create(meta);
-    lv_label_set_text(weather_cond_label_, "");
-    StyleTileText(weather_cond_label_, kColorInk);
-
-    weather_place_label_ = lv_label_create(meta);
-    lv_label_set_text(weather_place_label_, "");
-    StyleTileText(weather_place_label_, kColorDim);
 }
 
 void JarvisDashboardDisplay::BuildPendingColumn(lv_obj_t* parent) {
-    auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
-
-    lv_obj_t* column = lv_obj_create(parent);
+    lv_obj_t* column = MakeTransparentBox(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_size(column, ScaledWidth(kPendingColumnWidth), LV_PCT(100));
-    lv_obj_set_style_bg_opa(column, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(column, 0, 0);
-    lv_obj_set_style_pad_all(column, 0, 0);
-    lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_scrollbar_mode(column, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_clear_flag(column, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_row(column, kGap, 0);
 
     lv_obj_t* tile = MakeTile(column, lv_color_hex(kColorViolet), "PENDIENTES");
     lv_obj_set_flex_grow(tile, 1);
@@ -327,95 +437,176 @@ void JarvisDashboardDisplay::BuildPendingColumn(lv_obj_t* parent) {
     lv_label_set_text(pending_count_label_, "");
     StyleTileText(pending_count_label_, kColorViolet);
 
-    pending_body_ = lv_obj_create(tile);
-    lv_obj_set_size(pending_body_, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(pending_body_, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(pending_body_, 0, 0);
-    lv_obj_set_style_pad_all(pending_body_, 0, 0);
-    lv_obj_set_style_pad_row(pending_body_, 9, 0);
-    lv_obj_set_flex_flow(pending_body_, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_scrollbar_mode(pending_body_, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_clear_flag(pending_body_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t* pending_body = MakeTransparentBox(tile, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_size(pending_body, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_row(pending_body, 9, 0);
 
     for (int slot = 0; slot < kPendingSlotCount; slot++) {
-        pending_row_list_[slot] = lv_label_create(pending_body_);
+        pending_row_list_[slot] = lv_label_create(pending_body);
         lv_obj_set_width(pending_row_list_[slot], LV_PCT(100));
         lv_label_set_long_mode(pending_row_list_[slot], LV_LABEL_LONG_DOT);
         lv_label_set_text(pending_row_list_[slot], "");
         StyleTileText(pending_row_list_[slot], kColorInk);
         lv_obj_add_flag(pending_row_list_[slot], LV_OBJ_FLAG_HIDDEN);
     }
+
+    // El viaje vivia abajo de Einstein; ahora, abajo de los pendientes. Solo
+    // aparece cuando el servidor tiene un destino.
+    travel_tile_ = MakeTile(column, lv_color_hex(kColorGreen), nullptr);
+    lv_obj_set_height(travel_tile_, LV_SIZE_CONTENT);
+    travel_head_label_ = lv_label_create(travel_tile_);
+    lv_obj_set_width(travel_head_label_, LV_PCT(100));
+    lv_label_set_long_mode(travel_head_label_, LV_LABEL_LONG_DOT);
+    lv_label_set_text(travel_head_label_, "");
+    StyleTileText(travel_head_label_, kColorDim);
+    travel_value_label_ = lv_label_create(travel_tile_);
+    lv_label_set_text(travel_value_label_, "");
+    StyleTileText(travel_value_label_, kColorInk);
+    lv_obj_add_flag(travel_tile_, LV_OBJ_FLAG_HIDDEN);
 }
 
-void JarvisDashboardDisplay::BuildPetColumn(lv_obj_t* parent) {
-    auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
-    auto text_font = SafeFont(lvgl_theme->text_font());
-
-    lv_obj_t* column = lv_obj_create(parent);
+void JarvisDashboardDisplay::BuildSideColumn(lv_obj_t* parent) {
+    lv_obj_t* column = MakeTransparentBox(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_height(column, LV_PCT(100));
     lv_obj_set_flex_grow(column, 1);
-    lv_obj_set_style_bg_opa(column, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(column, 0, 0);
-    lv_obj_set_style_pad_all(column, 0, 0);
-    lv_obj_set_style_pad_row(column, kGap, 0);
-    lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_scrollbar_mode(column, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_clear_flag(column, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_row(column, IsCompactScreen() ? 6 : kGap, 0);
 
-    // Einstein va aca. En esta version la tarjeta muestra el estado en texto;
-    // el sprite se suma cuando los frames esten empaquetados en assets.bin.
-    pet_tile_ = MakeTile(column, lv_color_hex(kColorTurquoise), nullptr);
-    lv_obj_set_flex_grow(pet_tile_, 1);
-    // Alineado al tope y no centrado: centrado, cada vez que cambia el texto de
-    // abajo el sprite se recorre para arriba o para abajo. Con START queda
-    // clavado y solo se mueve el texto.
-    lv_obj_set_flex_align(pet_tile_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+    // De arriba hacia abajo, como en docs/vistas-tablero.md. El calendario se
+    // queda con lo que sobre: la lista de eventos de hoy es lo primero que
+    // cede si no hay alto (ver TodayEventCapacity).
+    BuildCalendarTile(column);
+    BuildWeatherTile(column);
+    BuildConversationTile(column);
+#ifdef CONFIG_JARVIS_SCREEN_TALK_BUTTONS
+    BuildTalkButtons(column);
+#endif
+}
+
+void JarvisDashboardDisplay::BuildCalendarTile(lv_obj_t* parent) {
+    const bool compact = IsCompactScreen();
+    lv_obj_t* tile = MakeTile(parent, lv_color_hex(kColorSky), "CALENDARIO");
+    lv_obj_set_flex_grow(tile, 1);
+    lv_obj_set_style_pad_all(tile, compact ? 7 : 10, 0);
+    lv_obj_set_style_pad_row(tile, 3, 0);
+    // El rotulo del encabezado pasa a ser el mes ("OCTUBRE 2026").
+    calendar_month_label_ = lv_obj_get_child(lv_obj_get_child(tile, 0), 1);
+
+    lv_obj_t* grid = MakeTransparentBox(tile, LV_FLEX_FLOW_ROW);
+    lv_obj_set_size(grid, LV_PCT(100), LV_SIZE_CONTENT);
+
+    for (int column_index = 0; column_index < kWeekdayCount; column_index++) {
+        lv_obj_t* column = lv_label_create(grid);
+        lv_obj_set_flex_grow(column, 1);
+        lv_obj_set_style_text_align(column, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_line_space(column, compact ? kCalendarLineSpaceCompact : 0, 0);
+        lv_obj_clear_flag(column, LV_OBJ_FLAG_SCROLLABLE);
+        // Los colores por dia (hoy, dias con eventos) van en el texto: solo
+        // numeros, asi que el comando de color no puede chocar con el contenido.
+        lv_label_set_recolor(column, true);
+        StyleTileText(column, kColorInk);
+        // Sin datos todavia: solo la inicial del dia y seis renglones vacios,
+        // para que la grilla ya ocupe su alto definitivo desde el arranque.
+        char text[48];
+        snprintf(text, sizeof(text), "#%06X %s#\n\n\n\n\n\n", (unsigned)kColorDim,
+                 kCalendarWeekdayInitialList[column_index]);
+        lv_label_set_text(column, text);
+        calendar_column_text_list_[column_index] = text;
+        calendar_column_list_[column_index] = column;
+    }
+
+    // Recuadro de hoy: hijo de la columna que le toque, por encima del numero.
+    // Solo borde (sin relleno) para no tapar el texto que queda debajo.
+    calendar_today_marker_ = lv_obj_create(calendar_column_list_[0]);
+    lv_obj_set_style_bg_opa(calendar_today_marker_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_color(calendar_today_marker_, lv_color_hex(kColorTurquoise), 0);
+    lv_obj_set_style_border_width(calendar_today_marker_, 2, 0);
+    lv_obj_set_style_radius(calendar_today_marker_, 6, 0);
+    lv_obj_set_style_pad_all(calendar_today_marker_, 0, 0);
+    lv_obj_clear_flag(calendar_today_marker_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(calendar_today_marker_, LV_OBJ_FLAG_HIDDEN);
+
+    today_event_area_ = MakeTransparentBox(tile, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_width(today_event_area_, LV_PCT(100));
+    lv_obj_set_flex_grow(today_event_area_, 1);
+    for (int slot = 0; slot < kTodayEventSlotCount; slot++) {
+        lv_obj_t* row = lv_label_create(today_event_area_);
+        lv_obj_set_width(row, LV_PCT(100));
+        lv_label_set_long_mode(row, LV_LABEL_LONG_DOT);
+        lv_label_set_text(row, "");
+        StyleTileText(row, kColorInk);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+        today_event_list_[slot] = row;
+    }
+}
+
+void JarvisDashboardDisplay::BuildWeatherTile(lv_obj_t* parent) {
+    const bool compact = IsCompactScreen();
+    lv_obj_t* weather = MakeTile(parent, lv_color_hex(kColorSky), nullptr);
+    lv_obj_set_height(weather, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(weather, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(weather, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_ver(weather, compact ? 4 : 8, 0);
+    lv_obj_set_style_pad_column(weather, 12, 0);
+
+    weather_temp_label_ = lv_label_create(weather);
+    lv_obj_set_style_text_font(weather_temp_label_, BigFont(), 0);
+    lv_label_set_text(weather_temp_label_, "--");
+    StyleTileText(weather_temp_label_, kColorInk);
+
+    lv_obj_t* meta = MakeTransparentBox(weather, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_height(meta, LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(meta, 1);
+
+    weather_cond_label_ = lv_label_create(meta);
+    lv_obj_set_width(weather_cond_label_, LV_PCT(100));
+    lv_label_set_long_mode(weather_cond_label_, LV_LABEL_LONG_DOT);
+    lv_label_set_text(weather_cond_label_, "");
+    StyleTileText(weather_cond_label_, kColorInk);
+
+    weather_detail_label_ = lv_label_create(meta);
+    lv_obj_set_width(weather_detail_label_, LV_PCT(100));
+    lv_label_set_long_mode(weather_detail_label_, LV_LABEL_LONG_DOT);
+    lv_label_set_text(weather_detail_label_, "");
+    StyleTileText(weather_detail_label_, kColorDim);
+}
+
+// La franja de conversacion es lo que antes decia Einstein: el estado del turno
+// arriba y lo que oyo o dice Jarvis abajo.
+void JarvisDashboardDisplay::BuildConversationTile(lv_obj_t* parent) {
+    const bool compact = IsCompactScreen();
+    lv_obj_t* tile = MakeTile(parent, lv_color_hex(kColorTurquoise), nullptr);
+    lv_obj_set_height(tile, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_ver(tile, compact ? 6 : 8, 0);
+    lv_obj_set_style_pad_row(tile, 2, 0);
 
     // status_label_ y notification_label_ son de la clase base: LvglDisplay los
     // muestra y esconde entre si, y dereferencia UNO SIN CHEQUEAR NULL cuando
     // escribe en el otro (lvgl_display.cc:159 y :185). Si SetupUI no los crea,
     // la primera notificacion de wifi tira un LoadProhibited y la placa entra
-    // en boot loop. Aca viven en la tarjeta de la mascota.
-    // El sprite va arriba del texto: la cara primero, el estado abajo.
-    pet_anim_ = lv_animimg_create(pet_tile_);
-    lv_obj_set_size(pet_anim_, kPetFrameWidth, kPetFrameHeight);
+    // en boot loop. Ocupan el mismo renglon: se ve uno u otro.
+    status_label_ = lv_label_create(tile);
+    lv_label_set_text(status_label_, Lang::Strings::STANDBY);
+    lv_obj_set_width(status_label_, LV_PCT(100));
+    lv_label_set_long_mode(status_label_, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_color(status_label_, accent_color_, 0);
 
-    pet_state_label_ = lv_label_create(pet_tile_);
-    status_label_ = pet_state_label_;
-    lv_label_set_text(pet_state_label_, "En reposo");
-    lv_obj_set_width(pet_state_label_, LV_PCT(100));
-    lv_label_set_long_mode(pet_state_label_, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_text_align(pet_state_label_, LV_TEXT_ALIGN_CENTER, 0);
-    StyleTileText(pet_state_label_, kColorTurquoise);
-
-    notification_label_ = lv_label_create(pet_tile_);
+    notification_label_ = lv_label_create(tile);
     lv_label_set_text(notification_label_, "");
     lv_obj_set_width(notification_label_, LV_PCT(100));
     lv_label_set_long_mode(notification_label_, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_text_align(notification_label_, LV_TEXT_ALIGN_CENTER, 0);
     StyleTileText(notification_label_, kColorInk);
     lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
 
-    pet_say_label_ = lv_label_create(pet_tile_);
-    lv_label_set_text(pet_say_label_, "");
-    lv_obj_set_width(pet_say_label_, LV_PCT(100));
-    lv_label_set_long_mode(pet_say_label_, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_align(pet_say_label_, LV_TEXT_ALIGN_CENTER, 0);
-    StyleTileText(pet_say_label_, kColorInk);
-
-#ifdef CONFIG_JARVIS_SCREEN_TALK_BUTTONS
-    BuildTalkButtons(column);
-#endif
-
-    lv_obj_t* travel = MakeTile(column, lv_color_hex(kColorGreen), nullptr);
-    travel_head_label_ = lv_label_create(travel);
-    lv_label_set_text(travel_head_label_, "");
-    StyleTileText(travel_head_label_, kColorDim);
-    travel_value_label_ = lv_label_create(travel);
-    lv_label_set_text(travel_value_label_, "");
-    StyleTileText(travel_value_label_, kColorInk);
-    lv_obj_add_flag(travel, LV_OBJ_FLAG_HIDDEN);
+    // Alto fijo de dos renglones con puntos suspensivos: una respuesta larga no
+    // empuja los botones fuera de la pantalla.
+    conversation_say_label_ = lv_label_create(tile);
+    lv_label_set_text(conversation_say_label_, "");
+    lv_obj_set_width(conversation_say_label_, LV_PCT(100));
+    lv_obj_set_height(conversation_say_label_,
+                      kConversationTextLineCount * LineHeightOf(lv_screen_active()));
+    lv_label_set_long_mode(conversation_say_label_, LV_LABEL_LONG_DOT);
+    StyleTileText(conversation_say_label_, kColorInk);
 }
 
 lv_obj_t* JarvisDashboardDisplay::MakeTalkButton(lv_obj_t* parent, uint32_t accent,
@@ -441,15 +632,10 @@ lv_obj_t* JarvisDashboardDisplay::MakeTalkButton(lv_obj_t* parent, uint32_t acce
 }
 
 void JarvisDashboardDisplay::BuildTalkButtons(lv_obj_t* parent) {
-    lv_obj_t* row = lv_obj_create(parent);
-    lv_obj_set_size(row, LV_PCT(100), kTalkButtonHeight);
-    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(row, 0, 0);
-    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_t* row = MakeTransparentBox(parent, LV_FLEX_FLOW_ROW);
+    lv_obj_set_size(row, LV_PCT(100),
+                    IsCompactScreen() ? kTalkButtonCompactHeight : kTalkButtonHeight);
     lv_obj_set_style_pad_column(row, kGap, 0);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_scrollbar_mode(row, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
     talk_button_ = MakeTalkButton(row, kColorTurquoise, "Hablar", &talk_button_label_);
     send_button_ = MakeTalkButton(row, kColorTangerine, "Enviar", &send_button_label_);
@@ -457,27 +643,259 @@ void JarvisDashboardDisplay::BuildTalkButtons(lv_obj_t* parent) {
     lv_obj_set_style_opa(send_button_, LV_OPA_40, 0);
 }
 
-JarvisDashboardDisplay::TalkButton JarvisDashboardDisplay::HitTestTalkButtons(int x, int y) {
-    DisplayLockGuard lock(this);
-    // Un recordatorio a pantalla completa tapa los botones y se lleva el toque.
-    if (reminder_overlay_ != nullptr && !lv_obj_has_flag(reminder_overlay_, LV_OBJ_FLAG_HIDDEN)) {
-        return TalkButton::kNone;
+void JarvisDashboardDisplay::BuildHouseView(lv_obj_t* parent) {
+    house_view_ = MakeTransparentBox(parent, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_width(house_view_, LV_PCT(100));
+    lv_obj_set_flex_grow(house_view_, 1);
+    lv_obj_set_style_pad_row(house_view_, kGap, 0);
+    lv_obj_add_flag(house_view_, LV_OBJ_FLAG_HIDDEN);
+
+    // Grilla fija de 4x3: cada mosaico tiene su celda aunque este escondido,
+    // asi que mostrar uno mas no corre a los demas.
+    lv_obj_t* grid = lv_obj_create(house_view_);
+    lv_obj_set_width(grid, LV_PCT(100));
+    lv_obj_set_flex_grow(grid, 1);
+    lv_obj_set_style_bg_opa(grid, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(grid, 0, 0);
+    lv_obj_set_style_radius(grid, 0, 0);
+    lv_obj_set_style_pad_all(grid, 0, 0);
+    lv_obj_set_style_pad_column(grid, kGap, 0);
+    lv_obj_set_style_pad_row(grid, kGap, 0);
+    lv_obj_set_grid_dsc_array(grid, kHomeGridColumnList, kHomeGridRowList);
+    lv_obj_set_scrollbar_mode(grid, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
+
+    for (int slot = 0; slot < kHomeTileSlotCount; slot++) {
+        BuildHomeTile(grid, slot);
     }
-    auto is_inside = [x, y](lv_obj_t* object) {
-        if (object == nullptr) {
-            return false;
-        }
-        lv_area_t area;
-        lv_obj_get_coords(object, &area);
-        return x >= area.x1 && x <= area.x2 && y >= area.y1 && y <= area.y2;
+
+    home_empty_label_ = lv_label_create(grid);
+    lv_obj_add_flag(home_empty_label_, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_set_width(home_empty_label_, LV_PCT(80));
+    lv_label_set_long_mode(home_empty_label_, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(home_empty_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(home_empty_label_, "Etiquetá entidades con 'jarvis' en Home Assistant");
+    StyleTileText(home_empty_label_, kColorDim);
+    lv_obj_center(home_empty_label_);
+
+    BuildDollarStrip(house_view_);
+}
+
+// Todas las piezas de todos los tipos, creadas una vez. Posiciones absolutas
+// dentro del mosaico en vez de filas flex: cinco objetos por mosaico y no
+// ocho, y nada se recalcula cuando cambia un texto.
+void JarvisDashboardDisplay::BuildHomeTile(lv_obj_t* parent, int slot) {
+    HomeTileWidgets& widgets = home_tile_widget_list_[slot];
+    const int pad = IsCompactScreen() ? 8 : 10;
+
+    lv_obj_t* tile = lv_obj_create(parent);
+    lv_obj_set_grid_cell(tile, LV_GRID_ALIGN_STRETCH, slot % kHomeGridColumnCount, 1,
+                         LV_GRID_ALIGN_STRETCH, slot / kHomeGridColumnCount, 1);
+    lv_obj_set_style_bg_color(tile, lv_color_hex(kColorTile), 0);
+    lv_obj_set_style_border_color(tile, lv_color_hex(kColorTileLine), 0);
+    lv_obj_set_style_border_width(tile, 1, 0);
+    lv_obj_set_style_radius(tile, 9, 0);
+    lv_obj_set_style_pad_all(tile, pad, 0);
+    lv_obj_set_scrollbar_mode(tile, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(tile, LV_OBJ_FLAG_HIDDEN);
+    widgets.tile = tile;
+
+    widgets.name_label = lv_label_create(tile);
+    lv_obj_set_width(widgets.name_label, LV_PCT(100));
+    lv_label_set_long_mode(widgets.name_label, LV_LABEL_LONG_DOT);
+    lv_label_set_text(widgets.name_label, "");
+    StyleTileText(widgets.name_label, kColorDim);
+    lv_obj_align(widgets.name_label, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    widgets.value_label = lv_label_create(tile);
+    lv_obj_set_width(widgets.value_label, LV_PCT(100));
+    lv_label_set_long_mode(widgets.value_label, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(widgets.value_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(widgets.value_label, BigFont(), 0);
+    lv_label_set_text(widgets.value_label, "");
+    StyleTileText(widgets.value_label, kColorInk);
+    lv_obj_align(widgets.value_label, LV_ALIGN_CENTER, 0, 0);
+
+    widgets.detail_label = lv_label_create(tile);
+    lv_obj_set_width(widgets.detail_label, LV_PCT(100));
+    lv_label_set_long_mode(widgets.detail_label, LV_LABEL_LONG_DOT);
+    lv_label_set_text(widgets.detail_label, "");
+    StyleTileText(widgets.detail_label, kColorDim);
+    lv_obj_align(widgets.detail_label, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+
+    // Los botones - y + son labels con fondo: un objeto cada uno. Se crean
+    // despues del valor para quedar por encima si algun texto largo llegara
+    // hasta los costados.
+    auto make_button = [tile](const char* text, lv_align_t align) {
+        lv_obj_t* button = lv_label_create(tile);
+        lv_obj_set_size(button, kClimateButtonSize, kClimateButtonSize);
+        lv_obj_set_style_text_font(button, BigFont(), 0);
+        lv_obj_set_style_text_align(button, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_bg_color(button, lv_color_hex(kColorTileLine), 0);
+        lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(button, 8, 0);
+        lv_obj_set_style_pad_all(button, 0, 0);
+        lv_label_set_text(button, text);
+        StyleTileText(button, kColorInk);
+        lv_obj_align(button, align, 0, 0);
+        lv_obj_add_flag(button, LV_OBJ_FLAG_HIDDEN);
+        return button;
     };
-    if (is_inside(talk_button_)) {
-        return TalkButton::kTalk;
+    widgets.minus_button = make_button("-", LV_ALIGN_LEFT_MID);
+    widgets.plus_button = make_button("+", LV_ALIGN_RIGHT_MID);
+}
+
+void JarvisDashboardDisplay::BuildDollarStrip(lv_obj_t* parent) {
+    const bool compact = IsCompactScreen();
+    dollar_strip_ = MakeTile(parent, lv_color_hex(kColorGreen), nullptr);
+    lv_obj_set_height(dollar_strip_, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(dollar_strip_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(dollar_strip_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_ver(dollar_strip_, compact ? 2 : 6, 0);
+    lv_obj_set_style_pad_column(dollar_strip_, 12, 0);
+
+    auto make_label = [this](const char* text, uint32_t color, bool big) {
+        lv_obj_t* label = lv_label_create(dollar_strip_);
+        if (big) {
+            lv_obj_set_style_text_font(label, BigFont(), 0);
+        }
+        lv_label_set_text(label, text);
+        StyleTileText(label, color);
+        return label;
+    };
+    make_label("DÓLAR BLUE", kColorGreen, false);
+    make_label("Compra", kColorDim, false);
+    dollar_buy_label_ = make_label("--", kColorInk, true);
+    make_label("Venta", kColorDim, false);
+    dollar_sell_label_ = make_label("--", kColorInk, true);
+
+    lv_obj_t* spacer = lv_obj_create(dollar_strip_);
+    lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(spacer, 0, 0);
+    lv_obj_set_height(spacer, 1);
+    lv_obj_set_flex_grow(spacer, 1);
+
+    dollar_updated_label_ = make_label("", kColorDim, false);
+    lv_obj_add_flag(dollar_strip_, LV_OBJ_FLAG_HIDDEN);
+}
+
+JarvisDashboardDisplay::TouchTarget JarvisDashboardDisplay::HitTest(int x, int y) {
+    DisplayLockGuard lock(this);
+    TouchTarget target;
+    // Un recordatorio a pantalla completa tapa todo y se lleva el toque.
+    if (reminder_overlay_ != nullptr && !lv_obj_has_flag(reminder_overlay_, LV_OBJ_FLAG_HIDDEN)) {
+        return target;
     }
-    if (is_inside(send_button_)) {
-        return TalkButton::kSend;
+    for (int view = 0; view < kViewCount; view++) {
+        if (IsInside(tab_label_list_[view], x, y, kTabHitMargin)) {
+            target.kind = TouchTargetKind::kTab;
+            target.index = view;
+            return target;
+        }
     }
-    return TalkButton::kNone;
+
+    if (current_view_ == View::kOverview) {
+        if (IsInside(talk_button_, x, y, 0)) {
+            target.kind = TouchTargetKind::kTalk;
+        } else if (IsInside(send_button_, x, y, 0)) {
+            target.kind = TouchTargetKind::kSend;
+        }
+        return target;
+    }
+
+    for (int slot = 0; slot < home_tile_count_; slot++) {
+        const HomeTile& tile = home_tile_list_[slot];
+        const HomeTileWidgets& widgets = home_tile_widget_list_[slot];
+        // Un mosaico no disponible no se toca: el toque sigue siendo un tap
+        // comun (cortar a Jarvis si esta hablando, por ejemplo).
+        if (!tile.available || IsHidden(widgets.tile)) {
+            continue;
+        }
+        if (tile.kind == HomeTileKind::kClimate) {
+            if (IsInside(widgets.minus_button, x, y, kClimateButtonHitMargin)) {
+                target.kind = TouchTargetKind::kClimateDown;
+                target.index = slot;
+                return target;
+            }
+            if (IsInside(widgets.plus_button, x, y, kClimateButtonHitMargin)) {
+                target.kind = TouchTargetKind::kClimateUp;
+                target.index = slot;
+                return target;
+            }
+        } else if (tile.kind == HomeTileKind::kToggle && IsInside(widgets.tile, x, y, 0)) {
+            target.kind = TouchTargetKind::kTileToggle;
+            target.index = slot;
+            return target;
+        }
+    }
+    return target;
+}
+
+bool JarvisDashboardDisplay::ApplyTileAction(const TouchTarget& target, std::string* entity_id,
+                                             const char** action) {
+    DisplayLockGuard lock(this);
+    if (target.index < 0 || target.index >= home_tile_count_) {
+        return false;
+    }
+    HomeTile& tile = home_tile_list_[target.index];
+    if (!tile.available) {
+        return false;
+    }
+    switch (target.kind) {
+        case TouchTargetKind::kTileToggle:
+            if (tile.kind != HomeTileKind::kToggle) {
+                return false;
+            }
+            tile.is_on = !tile.is_on;
+            *action = "toggle";
+            break;
+        case TouchTargetKind::kClimateDown:
+        case TouchTargetKind::kClimateUp: {
+            if (tile.kind != HomeTileKind::kClimate) {
+                return false;
+            }
+            const bool going_up = target.kind == TouchTargetKind::kClimateUp;
+            // Mismo paso que aplica el servidor (objetivo +- 0,5).
+            if (tile.has_target) {
+                tile.target_c += going_up ? 0.5f : -0.5f;
+            }
+            *action = going_up ? "climate_up" : "climate_down";
+            break;
+        }
+        default:
+            return false;
+    }
+    *entity_id = tile.entity_id;
+    // Se pinta ya: el servidor empuja el tablero apenas Home Assistant
+    // contesta, y ese tablero confirma o corrige lo que se ve ahora.
+    PaintHomeTile(target.index);
+    return true;
+}
+
+void JarvisDashboardDisplay::ShowView(View view) {
+    DisplayLockGuard lock(this);
+    if (overview_view_ == nullptr || house_view_ == nullptr || view == current_view_) {
+        return;
+    }
+    current_view_ = view;
+    SetHidden(overview_view_, view != View::kOverview);
+    SetHidden(house_view_, view != View::kHouse);
+    PaintTabs();
+    // direct_mode + full_refresh: igual que con el recordatorio, cambiar de
+    // vista tiene que repintar la pantalla entera.
+    lv_obj_invalidate(lv_screen_active());
+    ESP_LOGI(TAG, "vista %s", kViewTabTextList[(int)view]);
+}
+
+void JarvisDashboardDisplay::ShowAdjacentView(int step) {
+    DisplayLockGuard lock(this);
+    int next = ((int)current_view_ + step) % kViewCount;
+    if (next < 0) {
+        next += kViewCount;
+    }
+    ShowView(static_cast<View>(next));
 }
 
 void JarvisDashboardDisplay::SetTalkButtonsListening(bool listening) {
@@ -511,330 +929,14 @@ void JarvisDashboardDisplay::RefreshClockLabel() {
     char clock_text[8];
     snprintf(clock_text, sizeof(clock_text), "%02d:%02d", local_time.tm_hour,
              local_time.tm_min);
-    lv_label_set_text(clock_label_, clock_text);
+    SetLabelText(clock_label_, clock_text);
 
     if (date_label_ != nullptr) {
         char date_text[24];
         snprintf(date_text, sizeof(date_text), "%s %d %s",
                  kWeekdayAbbreviationList[local_time.tm_wday % 7], local_time.tm_mday,
                  kMonthAbbreviationList[local_time.tm_mon % 12]);
-        lv_label_set_text(date_label_, date_text);
-    }
-}
-
-// Carga los frames de la particion de assets. Van ahi y no embebidos en el
-// binario porque son 1,6 MB y en la app quedan 0,75 libres.
-//
-// GetAssetData devuelve un puntero MAPEADO EN MEMORIA a flash: no se copia nada
-// a RAM. LvglCBinImage arma el lv_img_dsc_t leyendo la cabecera del .bin.
-void JarvisDashboardDisplay::LoadPetFrames() {
-    struct ModeSpec {
-        PetAnimation* animation;
-        const char* prefix;
-        int frame_count;
-        uint32_t duration_ms;
-    };
-    const ModeSpec spec_list[] = {
-        {&pet_idle_, "ein_idle_", 6, kPetIdleDurationMs},
-        {&pet_listening_, "ein_wait_", 6, kPetListeningDurationMs},
-        {&pet_thinking_, "ein_think_", 6, kPetThinkingDurationMs},
-        {&pet_talking_, "ein_talk_", 4, kPetTalkingDurationMs},
-        {&pet_jump_, "ein_jump_", 5, kPetJumpDurationMs},
-        {&pet_fail_, "ein_fail_", 8, kPetFailDurationMs},
-        {&pet_run_, "ein_run_", 6, kPetRunDurationMs},
-        {&pet_run_right_, "ein_runr_", 8, kPetRunRightDurationMs},
-    };
-
-    auto& assets = Assets::GetInstance();
-    for (const auto& spec : spec_list) {
-        spec.animation->duration_ms = spec.duration_ms;
-        // Reservar ANTES de llenar: si el vector se reubicara, los punteros que
-        // se guardan despues en source_list quedarian colgando.
-        spec.animation->descriptor_list.reserve(spec.frame_count);
-
-        for (int index = 0; index < spec.frame_count; index++) {
-            char asset_name[40];
-            snprintf(asset_name, sizeof(asset_name), "%s%d.bin", spec.prefix, index);
-            void* data = nullptr;
-            size_t size = 0;
-            if (!assets.GetAssetData(asset_name, data, size)) {
-                ESP_LOGW(TAG, "falta el frame %s", asset_name);
-                continue;
-            }
-            if (size <= kLvglBinHeaderBytes) {
-                ESP_LOGW(TAG, "frame corto %s (%u bytes)", asset_name, (unsigned)size);
-                continue;
-            }
-            lv_img_dsc_t descriptor = {};
-            descriptor.header.magic = LV_IMAGE_HEADER_MAGIC;
-            descriptor.header.cf = LV_COLOR_FORMAT_RGB565A8;
-            descriptor.header.w = kPetFrameWidth;
-            descriptor.header.h = kPetFrameHeight;
-            // El plano de color es RGB565 (2 bytes); el alfa va aparte, despues.
-            descriptor.header.stride = kPetFrameWidth * 2;
-            descriptor.data = static_cast<const uint8_t*>(data) + kLvglBinHeaderBytes;
-            descriptor.data_size = size - kLvglBinHeaderBytes;
-            spec.animation->descriptor_list.push_back(descriptor);
-        }
-
-        // source_list se arma recien cuando descriptor_list ya no crece mas.
-        for (const auto& descriptor : spec.animation->descriptor_list) {
-            spec.animation->source_list.push_back(&descriptor);
-        }
-        ESP_LOGI(TAG, "%s cargo %d/%d frames", spec.prefix,
-                 (int)spec.animation->source_list.size(), spec.frame_count);
-    }
-}
-
-void JarvisDashboardDisplay::PlayPetMode(PetMode mode) {
-    if (pet_anim_ == nullptr) {
-        return;
-    }
-    // Cualquier cambio de estado interrumpe un paseo: Einstein vuelve al centro.
-    lv_anim_delete(pet_anim_, SetPetTranslateX);
-    lv_obj_set_style_translate_x(pet_anim_, 0, 0);
-
-    // El animo es de UNA respuesta: llega con el ui_state de "hablando" y se
-    // olvida en cuanto pasa a otro estado (en modo conversacion no vuelve a
-    // reposo entre turnos, va directo a escuchar).
-    if (mode != PetMode::kTalking) {
-        pet_mood_ = PetMood::kNone;
-    }
-    if (mode == PetMode::kIdle) {
-        pet_mode_ = mode;
-        StartIdleRest();
-        return;
-    }
-    PetAnimation* animation = &pet_idle_;
-    switch (mode) {
-        case PetMode::kListening: animation = &pet_listening_; break;
-        case PetMode::kThinking:  animation = &pet_thinking_;  break;
-        case PetMode::kTalking:   animation = AnimationForTalking(); break;
-        case PetMode::kIdle:      break;
-    }
-    // Un modo sin frames (asset faltante) no debe dejar la tarjeta en blanco:
-    // se queda con el que estaba sonando.
-    if (animation->source_list.empty()) {
-        return;
-    }
-    pet_mode_ = mode;
-    idle_act_ = IdleAct::kRest;
-    PlayPetAnimation(animation, LV_ANIM_REPEAT_INFINITE);
-}
-
-void JarvisDashboardDisplay::PlayPetAnimation(PetAnimation* animation, uint32_t repeat_count) {
-    if (pet_anim_ == nullptr || animation == nullptr || animation->source_list.empty()) {
-        return;
-    }
-    lv_animimg_set_src(pet_anim_, (const void**)animation->source_list.data(),
-                       animation->source_list.size());
-    lv_animimg_set_duration(pet_anim_, animation->duration_ms);
-    lv_animimg_set_repeat_count(pet_anim_, repeat_count);
-    lv_animimg_start(pet_anim_);
-}
-
-// Mientras habla, la cara sigue el animo de la respuesta; sin animo (o sin los
-// frames de ese animo) es el saludo de siempre.
-JarvisDashboardDisplay::PetAnimation* JarvisDashboardDisplay::AnimationForTalking() {
-    PetAnimation* animation = &pet_talking_;
-    switch (pet_mood_) {
-        case PetMood::kCelebrate: animation = &pet_jump_; break;
-        case PetMood::kSad:       animation = &pet_fail_; break;
-        case PetMood::kHurry:     animation = &pet_run_; break;
-        case PetMood::kPensive:   animation = &pet_thinking_; break;
-        case PetMood::kNone:      break;
-    }
-    return animation->source_list.empty() ? &pet_talking_ : animation;
-}
-
-void JarvisDashboardDisplay::SetMood(const char* mood) {
-    DisplayLockGuard lock(this);
-    PetMood parsed = PetMood::kNone;
-    if (mood != nullptr) {
-        if (strcmp(mood, "festejo") == 0) {
-            parsed = PetMood::kCelebrate;
-        } else if (strcmp(mood, "triste") == 0) {
-            parsed = PetMood::kSad;
-        } else if (strcmp(mood, "apurado") == 0) {
-            parsed = PetMood::kHurry;
-        } else if (strcmp(mood, "pensativo") == 0) {
-            parsed = PetMood::kPensive;
-        }
-    }
-    if (parsed == pet_mood_) {
-        return;
-    }
-    pet_mood_ = parsed;
-    ESP_LOGI(TAG, "Einstein: animo %s", mood == nullptr ? "neutro" : mood);
-    // Si ya esta hablando (el animo llego despues del primer segmento), cambia
-    // la cara en el momento.
-    if (pet_mode_ == PetMode::kTalking) {
-        PlayPetAnimation(AnimationForTalking(), LV_ANIM_REPEAT_INFINITE);
-    }
-}
-
-uint32_t JarvisDashboardDisplay::RandomBetween(uint32_t low, uint32_t high) {
-    if (high <= low) {
-        return low;
-    }
-    return low + esp_random() % (high - low);
-}
-
-void JarvisDashboardDisplay::ShowPetStill(const PetAnimation& animation, int frame_index) {
-    if (pet_anim_ == nullptr || frame_index < 0 ||
-        frame_index >= (int)animation.source_list.size()) {
-        return;
-    }
-    lv_animimg_delete(pet_anim_);
-    lv_image_set_src(pet_anim_, animation.source_list[frame_index]);
-}
-
-void JarvisDashboardDisplay::StartIdleRest() {
-    uint32_t now = lv_tick_get();
-    idle_act_ = IdleAct::kRest;
-    ShowPetStill(pet_idle_, kPetRestFrame);
-    next_blink_at_ms_ = now + RandomBetween(kBlinkMinGapMs, kBlinkMaxGapMs);
-    // Gesto y paseo se reprograman solo si nunca se programaron o ya vencieron
-    // (TickIdleLife los corre apenas tocan). Reprogramarlos en cada reposo los
-    // empujaba para adelante con cada parpadeo y no llegaban nunca.
-    if (next_gesture_at_ms_ == 0 || (int32_t)(next_gesture_at_ms_ - now) < 0) {
-        next_gesture_at_ms_ = now + RandomBetween(kGestureMinGapMs, kGestureMaxGapMs);
-    }
-    if (next_walk_at_ms_ == 0 || (int32_t)(next_walk_at_ms_ - now) < 0) {
-        next_walk_at_ms_ = now + RandomBetween(kWalkMinGapMs, kWalkMaxGapMs);
-    }
-}
-
-// Sale corriendo por la derecha y vuelve a entrar por la izquierda: la tarjeta
-// recorta lo que queda fuera, asi que parece que da la vuelta.
-void JarvisDashboardDisplay::StartWalk(bool walking_out) {
-    if (pet_run_right_.source_list.empty() || pet_tile_ == nullptr) {
-        next_walk_at_ms_ = lv_tick_get() + RandomBetween(kWalkMinGapMs, kWalkMaxGapMs);
-        return;
-    }
-    int32_t distance = lv_obj_get_width(pet_tile_) / 2 + kPetFrameWidth / 2 + 10;
-    if (walking_out) {
-        ESP_LOGI(TAG, "Einstein: sale a pasear");
-        PlayPetAnimation(&pet_run_right_, LV_ANIM_REPEAT_INFINITE);
-    }
-    lv_anim_delete(pet_anim_, SetPetTranslateX);
-    lv_anim_t animation;
-    lv_anim_init(&animation);
-    lv_anim_set_var(&animation, pet_anim_);
-    lv_anim_set_exec_cb(&animation, SetPetTranslateX);
-    lv_anim_set_values(&animation, walking_out ? 0 : -distance, walking_out ? distance : 0);
-    lv_anim_set_duration(&animation, kWalkLegMs);
-    lv_anim_start(&animation);
-    idle_act_ = walking_out ? IdleAct::kWalkOut : IdleAct::kWalkIn;
-    idle_act_ends_at_ms_ = lv_tick_get() + kWalkLegMs + 50;
-}
-
-void JarvisDashboardDisplay::OnIdleLifeTimer(lv_timer_t* timer) {
-    auto* self = static_cast<JarvisDashboardDisplay*>(lv_timer_get_user_data(timer));
-    self->TickIdleLife();
-}
-
-void JarvisDashboardDisplay::TickIdleLife() {
-    if (asleep_ || pet_mode_ != PetMode::kIdle || pet_anim_ == nullptr) {
-        return;
-    }
-    uint32_t now = lv_tick_get();
-    auto due = [now](uint32_t at) { return (int32_t)(now - at) >= 0; };
-
-    switch (idle_act_) {
-        case IdleAct::kRest:
-            if (due(next_walk_at_ms_)) {
-                next_walk_at_ms_ = now + RandomBetween(kWalkMinGapMs, kWalkMaxGapMs);
-                StartWalk(true);
-            } else if (due(next_gesture_at_ms_)) {
-                next_gesture_at_ms_ = now + RandomBetween(kGestureMinGapMs, kGestureMaxGapMs);
-                // Un gesto corto y al azar: se balancea (el loop de idle, que
-                // es justo el que no sirve de reposo), se pone pensativo,
-                // saluda, o muy de vez en cuando pega un salto.
-                PetAnimation* gesture = &pet_idle_;
-                uint32_t repeats = 2;
-                uint32_t pick = esp_random() % 10;
-                if (pick < 4) {
-                    gesture = &pet_idle_;
-                } else if (pick < 7) {
-                    gesture = &pet_thinking_;
-                    repeats = 2;
-                } else if (pick < 9) {
-                    gesture = &pet_talking_;
-                    repeats = 2;
-                } else {
-                    gesture = &pet_jump_;
-                    repeats = 1;
-                }
-                if (gesture->source_list.empty()) {
-                    gesture = &pet_idle_;
-                }
-                ESP_LOGI(TAG, "Einstein: gesto %d", (int)pick);
-                PlayPetAnimation(gesture, repeats);
-                idle_act_ = IdleAct::kGesture;
-                idle_act_ends_at_ms_ = now + gesture->duration_ms * repeats;
-            } else if (due(next_blink_at_ms_)) {
-                // Uno de cada cuatro es doble: cerrado, abierto, cerrado.
-                blinks_left_ = (esp_random() % 4 == 0) ? 3 : 1;
-                ShowPetStill(pet_idle_, kPetBlinkFrame);
-                idle_act_ = IdleAct::kBlink;
-                idle_act_ends_at_ms_ = now + kBlinkClosedMs;
-            }
-            break;
-        case IdleAct::kBlink:
-            if (due(idle_act_ends_at_ms_)) {
-                blinks_left_--;
-                if (blinks_left_ <= 0) {
-                    StartIdleRest();
-                } else {
-                    bool eyes_open = (blinks_left_ % 2) == 0;
-                    ShowPetStill(pet_idle_, eyes_open ? kPetRestFrame : kPetBlinkFrame);
-                    idle_act_ends_at_ms_ = now + (eyes_open ? kBlinkOpenGapMs : kBlinkClosedMs);
-                }
-            }
-            break;
-        case IdleAct::kGesture:
-            if (due(idle_act_ends_at_ms_)) {
-                StartIdleRest();
-            }
-            break;
-        case IdleAct::kWalkOut:
-            if (due(idle_act_ends_at_ms_)) {
-                StartWalk(false);
-            }
-            break;
-        case IdleAct::kWalkIn:
-            if (due(idle_act_ends_at_ms_)) {
-                lv_obj_set_style_translate_x(pet_anim_, 0, 0);
-                StartIdleRest();
-            }
-            break;
-    }
-}
-
-void JarvisDashboardDisplay::SetPowerSaveMode(bool on) {
-    JarvisDashboardBase::SetPowerSaveMode(on);
-    DisplayLockGuard lock(this);
-    asleep_ = on;
-    if (pet_anim_ == nullptr) {
-        return;
-    }
-    if (on) {
-        // Con la pantalla apagada no se anima nada: dormido, con los ojos
-        // cerrados, y el timer en pausa para no gastar CPU.
-        lv_anim_delete(pet_anim_, SetPetTranslateX);
-        lv_obj_set_style_translate_x(pet_anim_, 0, 0);
-        ShowPetStill(pet_idle_, kPetBlinkFrame);
-        if (idle_life_timer_ != nullptr) {
-            lv_timer_pause(idle_life_timer_);
-        }
-    } else {
-        if (idle_life_timer_ != nullptr) {
-            lv_timer_resume(idle_life_timer_);
-        }
-        if (pet_mode_ == PetMode::kIdle) {
-            StartIdleRest();
-        }
+        SetLabelText(date_label_, date_text);
     }
 }
 
@@ -845,6 +947,7 @@ void JarvisDashboardDisplay::SetupUI() {
     }
     Display::SetupUI();
     DisplayLockGuard lock(this);
+    const size_t internal_free_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
 
     auto screen = lv_screen_active();
     auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
@@ -869,21 +972,10 @@ void JarvisDashboardDisplay::SetupUI() {
     lv_obj_clear_flag(container_, LV_OBJ_FLAG_SCROLLABLE);
 
     BuildStatusBar(container_);
-
-    lv_obj_t* grid = lv_obj_create(container_);
-    lv_obj_set_width(grid, LV_PCT(100));
-    lv_obj_set_flex_grow(grid, 1);
-    lv_obj_set_style_bg_opa(grid, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(grid, 0, 0);
-    lv_obj_set_style_pad_all(grid, 0, 0);
-    lv_obj_set_style_pad_column(grid, kGap, 0);
-    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW);
-    lv_obj_set_scrollbar_mode(grid, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_clear_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
-
-    BuildAgendaColumn(grid);
-    BuildPendingColumn(grid);
-    BuildPetColumn(grid);
+    // Las dos vistas se arman al arrancar y se alternan con HIDDEN: cambiar de
+    // vista no crea ni destruye nada.
+    BuildOverviewView(container_);
+    BuildHouseView(container_);
 
     // Aviso de bateria baja: lo muestra y esconde UpdateStatusBar por su cuenta.
     low_battery_popup_ = lv_obj_create(screen);
@@ -914,9 +1006,24 @@ void JarvisDashboardDisplay::SetupUI() {
         esp_timer_start_periodic(clock_timer_, kClockTickPeriodMicroseconds);
     }
 
-    LoadPetFrames();
-    PlayPetMode(PetMode::kIdle);
-    idle_life_timer_ = lv_timer_create(OnIdleLifeTimer, kIdleLifeTickMs, this);
+    // Medicion de Casa: en uso normal arranca escondida, y un objeto escondido
+    // no pasa por el layout. Se la muestra una vez, con los mosaicos visibles,
+    // para que el log diga cuanto mide un mosaico en esta pantalla.
+    lv_obj_add_flag(overview_view_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(house_view_, LV_OBJ_FLAG_HIDDEN);
+    for (auto& widgets : home_tile_widget_list_) {
+        lv_obj_remove_flag(widgets.tile, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_update_layout(container_);
+    const int tile_width = (int)lv_obj_get_width(home_tile_widget_list_[0].tile);
+    const int tile_height = (int)lv_obj_get_height(home_tile_widget_list_[0].tile);
+    for (auto& widgets : home_tile_widget_list_) {
+        lv_obj_add_flag(widgets.tile, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_add_flag(house_view_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(overview_view_, LV_OBJ_FLAG_HIDDEN);
+    current_view_ = View::kOverview;
+    PaintTabs();
 
     // OJO: sin esto la pantalla queda NEGRA.
     //
@@ -932,8 +1039,18 @@ void JarvisDashboardDisplay::SetupUI() {
     lv_obj_update_layout(container_);
     lv_obj_invalidate(lv_screen_active());
 
-    ESP_LOGI(TAG, "tablero armado: %dx%d (container %dx%d)", LV_HOR_RES, LV_VER_RES,
-             (int)lv_obj_get_width(container_), (int)lv_obj_get_height(container_));
+    lv_obj_t* side_column = lv_obj_get_child(overview_view_, 2);
+    lv_obj_t* calendar_tile = lv_obj_get_parent(today_event_area_);
+    const size_t internal_free_after = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG,
+             "tablero armado: %dx%d (container %dx%d) derecha %dx%d, calendario %dx%d, "
+             "eventos de hoy %d de %d, conversacion %d, mosaico %dx%d, RAM interna %u -> %u",
+             LV_HOR_RES, LV_VER_RES, (int)lv_obj_get_width(container_),
+             (int)lv_obj_get_height(container_), (int)lv_obj_get_width(side_column),
+             (int)lv_obj_get_height(side_column), (int)lv_obj_get_width(calendar_tile),
+             (int)lv_obj_get_height(calendar_tile), TodayEventCapacity(), kTodayEventSlotCount,
+             (int)lv_obj_get_height(lv_obj_get_parent(conversation_say_label_)), tile_width,
+             tile_height, (unsigned)internal_free_before, (unsigned)internal_free_after);
 }
 
 // LcdDisplay::SetTheme repinta la UI de chat entera y toca `emoji_label_`,
@@ -966,39 +1083,266 @@ void JarvisDashboardDisplay::SetTheme(Theme* theme) {
     Display::SetTheme(theme);
 }
 
-void JarvisDashboardDisplay::SetDashboardData(const DashboardData& data) {
-    DisplayLockGuard lock(this);
-    auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
-    auto text_font = SafeFont(lvgl_theme->text_font());
+void JarvisDashboardDisplay::ApplyWeather(const DashboardData& data) {
+    if (weather_temp_label_ == nullptr || !data.weather_present) {
+        return;
+    }
+    if (!data.has_weather) {
+        SetLabelText(weather_temp_label_, "--");
+        SetLabelText(weather_cond_label_, "");
+        SetLabelText(weather_detail_label_, "");
+        return;
+    }
+    char temperature_text[12];
+    snprintf(temperature_text, sizeof(temperature_text), "%d°", data.temperature_c);
+    SetLabelText(weather_temp_label_, temperature_text);
+    lv_color_t temperature_color = lv_color_hex(WeatherColorFor(data.condition_code));
+    if (!lv_color_eq(lv_obj_get_style_text_color(weather_temp_label_, LV_PART_MAIN),
+                     temperature_color)) {
+        lv_obj_set_style_text_color(weather_temp_label_, temperature_color, 0);
+    }
+    SetLabelText(weather_cond_label_, data.condition_label.c_str());
 
-    if (weather_temp_label_ != nullptr && data.weather_present) {
-        if (data.has_weather) {
-            char temperature_text[8];
-            snprintf(temperature_text, sizeof(temperature_text), "%d", data.temperature_c);
-            lv_label_set_text(weather_temp_label_, temperature_text);
-            lv_label_set_text(weather_cond_label_, data.condition_label.c_str());
-            lv_label_set_text(weather_place_label_, data.place_label.c_str());
-        } else {
-            lv_label_set_text(weather_temp_label_, "--");
-            lv_label_set_text(weather_cond_label_, "");
-            lv_label_set_text(weather_place_label_, "");
+    // Segundo renglon: minima/maxima y humedad si las hay (clima de Home
+    // Assistant); si no, el lugar, como antes.
+    std::string detail;
+    char part[32];
+    if (data.has_min) {
+        snprintf(part, sizeof(part), "Mín %d°", data.min_c);
+        detail += part;
+    }
+    if (data.has_max) {
+        snprintf(part, sizeof(part), "%sMáx %d°", detail.empty() ? "" : " · ", data.max_c);
+        detail += part;
+    }
+    if (data.has_humidity) {
+        snprintf(part, sizeof(part), "%sHum. %d%%", detail.empty() ? "" : " · ",
+                 data.humidity_percent);
+        detail += part;
+    }
+    if (detail.empty()) {
+        detail = data.place_label;
+    }
+    SetLabelText(weather_detail_label_, detail.c_str());
+}
+
+// Cuantos eventos de hoy entran debajo de la grilla. Depende del alto que le
+// dejaron las otras tarjetas, que no es el mismo en las dos pantallas: en la
+// 4.3C entra uno, en la P4-7B los cuatro. Mostrar un renglon cortado a la mitad
+// se ve roto, asi que los que no entran enteros se esconden.
+int JarvisDashboardDisplay::TodayEventCapacity() {
+    if (today_event_area_ == nullptr) {
+        return 0;
+    }
+    const int line_height = std::max(1, LineHeightOf(today_event_area_));
+    const int capacity = (int)lv_obj_get_content_height(today_event_area_) / line_height;
+    return std::min(std::max(capacity, 0), (int)kTodayEventSlotCount);
+}
+
+void JarvisDashboardDisplay::ApplyMonthCalendar(const DashboardData& data) {
+    if (!data.month_calendar_present || calendar_column_list_[0] == nullptr) {
+        return;
+    }
+    const bool valid = data.has_month_calendar && data.calendar_month >= 1 &&
+                       data.calendar_month <= 12 && data.calendar_day_count >= 28 &&
+                       data.calendar_day_count <= 31 && data.calendar_first_weekday >= 0 &&
+                       data.calendar_first_weekday < kWeekdayCount;
+
+    char heading[32] = "CALENDARIO";
+    if (valid) {
+        snprintf(heading, sizeof(heading), "%s %d", kMonthNameList[data.calendar_month - 1],
+                 data.calendar_year);
+    }
+    SetLabelText(calendar_month_label_, heading);
+
+    bool event_day_list[32] = {};
+    for (int day : data.calendar_event_day_list) {
+        if (day >= 1 && day <= 31) {
+            event_day_list[day] = true;
         }
     }
+
+    // Seis semanas siempre: la grilla mide lo mismo todos los meses y nada se
+    // corre cuando un mes ocupa cinco.
+    constexpr int kWeekRowCount = 6;
+    int today_column = -1;
+    int today_row = -1;
+    for (int column_index = 0; column_index < kWeekdayCount; column_index++) {
+        char text[192];
+        int length = snprintf(text, sizeof(text), "#%06X %s#", (unsigned)kColorDim,
+                              kCalendarWeekdayInitialList[column_index]);
+        for (int week = 0; week < kWeekRowCount; week++) {
+            const int day = week * kWeekdayCount + column_index - data.calendar_first_weekday + 1;
+            const bool in_month = valid && day >= 1 && day <= data.calendar_day_count;
+            const int remaining = (int)sizeof(text) - length;
+            if (remaining <= 1) {
+                break;
+            }
+            if (!in_month) {
+                length += snprintf(text + length, remaining, "\n");
+            } else if (day == data.calendar_today_day) {
+                length += snprintf(text + length, remaining, "\n#%06X %d#",
+                                   (unsigned)kColorTurquoise, day);
+                today_column = column_index;
+                today_row = week + 1;  // el renglon 0 es la inicial del dia
+            } else if (event_day_list[day]) {
+                length += snprintf(text + length, remaining, "\n#%06X %d#",
+                                   (unsigned)kColorTangerine, day);
+            } else {
+                length += snprintf(text + length, remaining, "\n%d", day);
+            }
+        }
+        if (calendar_column_text_list_[column_index] != text) {
+            calendar_column_text_list_[column_index] = text;
+            lv_label_set_text(calendar_column_list_[column_index], text);
+        }
+    }
+
+    if (today_column < 0) {
+        SetHidden(calendar_today_marker_, true);
+    } else {
+        lv_obj_t* column = calendar_column_list_[today_column];
+        if (lv_obj_get_parent(calendar_today_marker_) != column) {
+            lv_obj_set_parent(calendar_today_marker_, column);
+        }
+        // Cada renglon mide el alto de linea de la fuente mas el interlineado
+        // (negativo en la pantalla compacta).
+        const int pitch = LineHeightOf(column) +
+                          (int)lv_obj_get_style_text_line_space(column, LV_PART_MAIN);
+        if (pitch != calendar_row_pitch_ || today_row != calendar_marker_row_) {
+            calendar_row_pitch_ = pitch;
+            calendar_marker_row_ = today_row;
+            lv_obj_set_size(calendar_today_marker_, LV_PCT(100), pitch);
+            lv_obj_set_pos(calendar_today_marker_, 0, today_row * pitch);
+        }
+        SetHidden(calendar_today_marker_, false);
+    }
+
+    const int capacity = TodayEventCapacity();
+    for (int slot = 0; slot < kTodayEventSlotCount; slot++) {
+        const bool used = valid && slot < capacity &&
+                          slot < (int)data.calendar_today_event_list.size();
+        if (used) {
+            const auto& event = data.calendar_today_event_list[slot];
+            const std::string text = event.time_label + "  " + event.title;
+            SetLabelText(today_event_list_[slot], text.c_str());
+        }
+        SetHidden(today_event_list_[slot], !used);
+    }
+}
+
+void JarvisDashboardDisplay::ApplyHome(const DashboardData& data) {
+    if (!data.home_present || home_empty_label_ == nullptr) {
+        return;
+    }
+    home_tile_count_ = std::min((int)data.home_tile_list.size(), (int)kHomeTileSlotCount);
+    for (int slot = 0; slot < kHomeTileSlotCount; slot++) {
+        const bool used = slot < home_tile_count_;
+        if (used) {
+            // Lo que llega pisa cualquier cambio optimista: es la confirmacion
+            // (o la correccion) de Home Assistant.
+            home_tile_list_[slot] = data.home_tile_list[slot];
+            PaintHomeTile(slot);
+        }
+        SetHidden(home_tile_widget_list_[slot].tile, !used);
+    }
+    SetHidden(home_empty_label_, home_tile_count_ > 0);
+
+    SetHidden(dollar_strip_, !data.has_dollar_blue);
+    if (data.has_dollar_blue) {
+        SetLabelText(dollar_buy_label_, FormatPesos(data.dollar_buy).c_str());
+        SetLabelText(dollar_sell_label_, FormatPesos(data.dollar_sell).c_str());
+        SetLabelText(dollar_updated_label_, data.dollar_updated_label.c_str());
+    }
+}
+
+void JarvisDashboardDisplay::PaintHomeTile(int slot) {
+    const HomeTile& tile = home_tile_list_[slot];
+    HomeTileWidgets& widgets = home_tile_widget_list_[slot];
+    if (widgets.tile == nullptr) {
+        return;
+    }
+
+    int look = kTileLookNormal;
+    if (!tile.available) {
+        look = kTileLookUnavailable;
+    } else if (tile.kind == HomeTileKind::kToggle && tile.is_on) {
+        look = kTileLookOn;
+    }
+    if (look != widgets.painted_look) {
+        widgets.painted_look = look;
+        const bool is_on = look == kTileLookOn;
+        lv_obj_set_style_bg_color(widgets.tile, lv_color_hex(is_on ? kColorTileOn : kColorTile),
+                                  0);
+        lv_obj_set_style_border_color(widgets.tile,
+                                      lv_color_hex(is_on ? kColorAmber : kColorTileLine), 0);
+        lv_obj_set_style_border_width(widgets.tile, is_on ? 2 : 1, 0);
+        lv_obj_set_style_text_color(widgets.value_label, lv_color_hex(is_on ? kColorAmber : kColorInk),
+                                    0);
+        // Gris y apagado, pero legible: se tiene que ver QUE no esta disponible.
+        lv_obj_set_style_opa(widgets.tile, look == kTileLookUnavailable ? LV_OPA_50 : LV_OPA_COVER,
+                             0);
+    }
+
+    SetLabelText(widgets.name_label, tile.name.c_str());
+    const bool is_climate = tile.kind == HomeTileKind::kClimate;
+    SetHidden(widgets.minus_button, !is_climate || !tile.available);
+    SetHidden(widgets.plus_button, !is_climate || !tile.available);
+
+    if (!tile.available) {
+        SetLabelText(widgets.value_label, "--");
+        SetLabelText(widgets.detail_label, "No disponible");
+        return;
+    }
+
+    switch (tile.kind) {
+        case HomeTileKind::kToggle:
+            SetLabelText(widgets.value_label, tile.is_on ? "Prendido" : "Apagado");
+            SetLabelText(widgets.detail_label, tile.is_on ? "Tocá para apagar" : "Tocá para prender");
+            break;
+        case HomeTileKind::kSensor: {
+            std::string value = tile.value;
+            if (!tile.unit.empty()) {
+                // Sin espacio antes de los grados y el porcentaje, como se escribe.
+                const bool glued = tile.unit == "°C" || tile.unit == "°F" || tile.unit == "%";
+                value += glued ? tile.unit : " " + tile.unit;
+            }
+            SetLabelText(widgets.value_label, value.c_str());
+            SetLabelText(widgets.detail_label, "");
+            break;
+        }
+        case HomeTileKind::kClimate: {
+            const std::string target =
+                tile.has_target ? FormatTenths(tile.target_c) + "°" : std::string("--");
+            SetLabelText(widgets.value_label, target.c_str());
+            std::string detail;
+            if (tile.has_current) {
+                detail = "Actual " + FormatTenths(tile.current_c) + "°";
+            }
+            if (!tile.hvac_mode.empty()) {
+                detail += (detail.empty() ? "" : " · ");
+                detail += HvacModeLabel(tile.hvac_mode);
+            }
+            SetLabelText(widgets.detail_label, detail.c_str());
+            break;
+        }
+    }
+}
+
+void JarvisDashboardDisplay::SetDashboardData(const DashboardData& data) {
+    DisplayLockGuard lock(this);
+
+    ApplyWeather(data);
 
     for (int slot = 0; data.agenda_present && slot < kAgendaSlotCount; slot++) {
         const bool used = slot < (int)data.agenda_list.size();
         if (used) {
-            lv_label_set_text(agenda_title_list_[slot], data.agenda_list[slot].title.c_str());
-            lv_label_set_text(agenda_when_list_[slot], data.agenda_list[slot].when_label.c_str());
+            SetLabelText(agenda_title_list_[slot], data.agenda_list[slot].title.c_str());
+            SetLabelText(agenda_when_list_[slot], data.agenda_list[slot].when_label.c_str());
         }
         // Se muestran u ocultan, nunca se crean ni se destruyen.
-        for (lv_obj_t* label : {agenda_title_list_[slot], agenda_when_list_[slot]}) {
-            if (used) {
-                lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
-            } else {
-                lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
-            }
-        }
+        SetHidden(agenda_title_list_[slot], !used);
+        SetHidden(agenda_when_list_[slot], !used);
     }
 
     for (int slot = 0; data.pending_present && slot < kPendingSlotCount; slot++) {
@@ -1006,30 +1350,28 @@ void JarvisDashboardDisplay::SetDashboardData(const DashboardData& data) {
         if (used) {
             // El punto va en el texto: un objeto menos por fila, y son cuatro.
             const std::string bulleted = "- " + data.pending_item_list[slot];
-            lv_label_set_text(pending_row_list_[slot], bulleted.c_str());
-            lv_obj_clear_flag(pending_row_list_[slot], LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(pending_row_list_[slot], LV_OBJ_FLAG_HIDDEN);
+            SetLabelText(pending_row_list_[slot], bulleted.c_str());
         }
+        SetHidden(pending_row_list_[slot], !used);
     }
     if (pending_count_label_ != nullptr && data.pending_present) {
         char count_text[8];
         snprintf(count_text, sizeof(count_text), "%d", data.pending_count);
-        lv_label_set_text(pending_count_label_, data.has_pending ? count_text : "");
+        SetLabelText(pending_count_label_, data.has_pending ? count_text : "");
     }
 
-    if (travel_value_label_ != nullptr && data.travel_present) {
-        lv_obj_t* travel_tile = lv_obj_get_parent(travel_value_label_);
+    if (travel_tile_ != nullptr && data.travel_present) {
         if (data.has_travel) {
             char minutes_text[16];
             snprintf(minutes_text, sizeof(minutes_text), "%d min", data.travel_minutes);
-            lv_label_set_text(travel_head_label_, data.travel_label.c_str());
-            lv_label_set_text(travel_value_label_, minutes_text);
-            lv_obj_clear_flag(travel_tile, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(travel_tile, LV_OBJ_FLAG_HIDDEN);
+            SetLabelText(travel_head_label_, data.travel_label.c_str());
+            SetLabelText(travel_value_label_, minutes_text);
         }
+        SetHidden(travel_tile_, !data.has_travel);
     }
+
+    ApplyMonthCalendar(data);
+    ApplyHome(data);
 }
 
 // El recordatorio se dibuja una sola vez, escondido, y despues solo se le
@@ -1110,32 +1452,56 @@ bool JarvisDashboardDisplay::IsReminderVisible() {
            !lv_obj_has_flag(reminder_overlay_, LV_OBJ_FLAG_HIDDEN);
 }
 
-void JarvisDashboardDisplay::SetChatMessage(const char* role, const char* content) {
-    DisplayLockGuard lock(this);
-    if (pet_say_label_ == nullptr) {
+// En reposo UpdateStatusBar pone la hora en el estado cada 10 s. La hora ya
+// esta en la barra de arriba: en la franja de conversacion se lee "En espera".
+// Repetir el mismo texto no se aplica (repintaria toda la pantalla RGB).
+void JarvisDashboardDisplay::SetStatus(const char* status) {
+    if (status == nullptr) {
         return;
     }
-    lv_label_set_text(pet_say_label_, content == nullptr ? "" : content);
+    const bool is_clock_refresh = IsClockText(status);
+    const char* shown = is_clock_refresh ? Lang::Strings::STANDBY : status;
+    {
+        DisplayLockGuard lock(this);
+        if (status_label_ == nullptr) {
+            // Antes de SetupUI: que la base loguee lo que corresponda.
+        } else if (is_clock_refresh &&
+                   (!IsHidden(notification_label_) ||
+                    strcmp(lv_label_get_text(status_label_), shown) == 0)) {
+            // El refresco de la hora no pisa un aviso que se esta mostrando
+            // (se va solo a los 3 s) ni repinta el mismo "En espera". Se
+            // anota como hecho para que la base vuelva a intentar en 10 s y
+            // no en cada segundo.
+            last_status_update_time_ = std::chrono::system_clock::now();
+            return;
+        }
+        // Una conversacion vuelve a Inicio: la franja y los botones viven ahi.
+        if (strcmp(shown, Lang::Strings::LISTENING) == 0 ||
+            strcmp(shown, Lang::Strings::SPEAKING) == 0) {
+            ShowView(View::kOverview);
+        }
+        showing_thinking_ = false;
+    }
+    JarvisDashboardBase::SetStatus(shown);
 }
 
-// Las emociones que manda el servidor se agrupan en los cuatro modos que tiene
-// el sprite. Cualquiera que no encaje cae en reposo, que es el unico que siempre
-// tiene frames.
+void JarvisDashboardDisplay::SetChatMessage(const char* role, const char* content) {
+    (void)role;
+    DisplayLockGuard lock(this);
+    SetLabelText(conversation_say_label_, content);
+}
+
+// Sin Einstein, la unica emocion que se dibuja es "pensando": es el unico
+// estado del turno que no tiene su propio SetStatus en Application.
 void JarvisDashboardDisplay::SetEmotion(const char* emotion) {
     if (emotion == nullptr) {
         return;
     }
     DisplayLockGuard lock(this);
-    PetMode mode = PetMode::kIdle;
-    if (strcmp(emotion, "listening") == 0 || strcmp(emotion, "curious") == 0) {
-        mode = PetMode::kListening;
-    } else if (strcmp(emotion, "thinking") == 0 || strcmp(emotion, "focused") == 0 ||
-               strcmp(emotion, "questioning") == 0) {
-        mode = PetMode::kThinking;
-    } else if (strcmp(emotion, "speaking") == 0 || strcmp(emotion, "talking") == 0 ||
-               strcmp(emotion, "happy") == 0 || strcmp(emotion, "laughing") == 0) {
-        mode = PetMode::kTalking;
-    }
+    const bool is_listening = strcmp(emotion, "listening") == 0 || strcmp(emotion, "curious") == 0;
+    const bool is_thinking = strcmp(emotion, "thinking") == 0 ||
+                             strcmp(emotion, "focused") == 0 ||
+                             strcmp(emotion, "questioning") == 0;
     // Empezar a hablarle a Jarvis tambien descarta el recordatorio.
     //
     // Es la red de seguridad del overlay: sin esto la UNICA salida es el
@@ -1146,12 +1512,25 @@ void JarvisDashboardDisplay::SetEmotion(const char* emotion) {
     // El anuncio del propio recordatorio no dispara esto: announcePcm manda
     // tts_start/tts_end/turn_end pero ningun mensaje de emocion, asi que el
     // aviso no se borra a si mismo mientras lo esta leyendo.
-    if (mode == PetMode::kListening) {
+    if (is_listening) {
         DismissReminder();
     }
 
-    if (mode != pet_mode_) {
-        PlayPetMode(mode);
+    if (is_thinking && !showing_thinking_) {
+        // La version de la base, no la propia: la propia apaga el flag.
+        JarvisDashboardBase::SetStatus(kThinkingStatusText);
+        showing_thinking_ = true;
+    } else if (!is_thinking && showing_thinking_) {
+        // Termino de pensar sin cambiar de estado (por ejemplo, una respuesta
+        // sin voz): vuelve el rotulo del estado en que quedo la placa.
+        const char* status = Lang::Strings::STANDBY;
+        switch (Application::GetInstance().GetDeviceState()) {
+            case kDeviceStateListening: status = Lang::Strings::LISTENING; break;
+            case kDeviceStateSpeaking: status = Lang::Strings::SPEAKING; break;
+            case kDeviceStateConnecting: status = Lang::Strings::CONNECTING; break;
+            default: break;
+        }
+        SetStatus(status);
     }
 }
 
@@ -1160,8 +1539,12 @@ void JarvisDashboardDisplay::SetAccentColor(const char* color) {
         return;
     }
     DisplayLockGuard lock(this);
-    accent_color_ = LvglTheme::ParseColor(color);
-    if (pet_state_label_ != nullptr) {
-        lv_obj_set_style_text_color(pet_state_label_, accent_color_, 0);
+    lv_color_t parsed = LvglTheme::ParseColor(color);
+    if (lv_color_eq(parsed, accent_color_)) {
+        return;
+    }
+    accent_color_ = parsed;
+    if (status_label_ != nullptr) {
+        lv_obj_set_style_text_color(status_label_, accent_color_, 0);
     }
 }

@@ -45,6 +45,9 @@ public:
     void SendMcpMessage(const std::string& payload) override;
     // El recordatorio a pantalla completa se descarto con un toque.
     void SendReminderSeen();
+    // Mosaico de la vista Casa: action es "toggle", "climate_up" o
+    // "climate_down".
+    void SendHaAction(const std::string& entity_id, const char* action);
 
 private:
     std::unique_ptr<WebSocket> websocket_;

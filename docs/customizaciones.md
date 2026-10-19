@@ -141,25 +141,40 @@ llegó a aceptar mensajes que nunca salieron.
 
 ### Tablero LVGL — `main/display/jarvis_dashboard_display.cc`, `dashboard/`
 
-La idea de Apollo es una cara a pantalla completa. Acá la pantalla es un **dashboard** con la
-mascota en una esquina: hora, clima, agenda del día (calendario + recordatorios mezclados por
-hora), pendientes de la lista, tiempo de viaje con tráfico, y el estado del turno.
+La idea de Apollo es una cara a pantalla completa. Acá la pantalla es un **dashboard** con dos
+vistas (contrato en [vistas-tablero.md](vistas-tablero.md)), que se cambian con las pestañas
+**Inicio / Casa** de la barra de arriba o **deslizando** el dedo. Deslizar ya no cambia el modo
+de habla: lo resuelve la placa y no viaja al servidor.
 
+- **Inicio:** agenda (calendario + recordatorios mezclados por hora) a la izquierda, pendientes
+  (y el viaje con tráfico, si hay destino) al medio, y a la derecha el calendario del mes (hoy
+  recuadrado, días con eventos en naranja y los eventos de hoy debajo), el clima (temperatura
+  grande, condición, mín./máx. y humedad cuando vienen de Home Assistant), la **franja de
+  conversación** (estado del turno y lo que oyó o dice Jarvis) y los botones Hablar/Enviar.
+  Cuando empieza una conversación la pantalla vuelve sola a Inicio.
+- **Casa:** grilla de hasta 12 mosaicos de Home Assistant (entidades con la etiqueta `jarvis`)
+  y una franja con el dólar blue. Un toque en un interruptor lo prende o apaga; − y + mueven el
+  clima 0,5 °C. La placa pinta el cambio en el acto y manda `ha_action`; el tablero que el
+  servidor empuja enseguida lo confirma o lo corrige. Los sensores no se tocan y lo no
+  disponible sale en gris.
+- En la 4.3C (800×480) la columna derecha va apretada: entra un evento de hoy; en la P4-7B
+  (1024×600), los cuatro. El log de arranque (`tablero armado: ...`) dice cuánto mide cada cosa.
 - El servidor arma y **recorta** el contenido (`dashboard/payload.ts`) y lo manda **cada 10 s
   aunque no haya cambiado**: mandarlo solo al cambiar dejaba la pantalla vacía después de cada
   reinicio de la placa.
-- Las filas se crean una sola vez y solo cambia el texto (recrearlas hacía parpadear todo).
+- Todo se crea una sola vez al arrancar (las dos vistas, los 12 mosaicos) y después solo cambia
+  el texto o se muestra/esconde; un texto igual al que ya está no se vuelve a poner, porque en
+  el panel RGB cualquier cambio repinta la pantalla entera.
 - `DashboardPayload` se **deriva** del esquema zod del protocolo: el encoder descarta en silencio
   cualquier clave que no esté en el esquema, así que un campo nuevo sin declarar ahora es un
   error de compilación.
 
-### Einstein — `main/assets/einstein/`, `tools/convert-einstein.sh`
+### Einstein (retirado) — `main/assets/einstein/`, `tools/convert-einstein.sh`
 
-Sprite pixel art con 9 animaciones (57 frames, 150×163 RGB565A8) que vive en la partición de
-assets y se lee **directo de flash**, sin copiarlo a RAM. Escucha (Waiting), piensa (Review),
-habla (Waving), festeja (Jumping), se pone triste (Failed) o se apura (Running) según el tono
-de la respuesta; en reposo parpadea al azar, hace un gesto cada tanto y cada 4–8 minutos sale
-corriendo por un costado y entra por el otro.
+Sprite pixel art con 9 animaciones (57 frames, 150×163 RGB565A8) que vivía en una esquina del
+tablero. Con las vistas Inicio/Casa **ya no se dibuja**: su lugar lo ocupa la franja de
+conversación. Los frames siguen en el repo y CMake los sigue empaquetando en la partición de
+assets, así que volver a usarlos no requiere regenerar nada.
 
 ### Lo que se ve durante un turno — `turn/caption.ts`, `turn/streaming.ts`
 
@@ -182,7 +197,8 @@ vuelve a prender). El micrófono se abre de tres maneras:
 | **Mantener Hablar** (o la pantalla en cualquier lado) | Push-to-talk: graba mientras está apretado, soltar envía. |
 | **Tocar Enviar** | Corta la escucha y manda lo grabado, sin esperar el silencio. |
 
-Tocar fuera de los botones con el micrófono abierto lo descarta, como antes. Si Jarvis responde
+Tocar fuera de los botones con el micrófono abierto lo descarta, como antes. Mantener apretado
+graba en cualquier lado salvo sobre Enviar, una pestaña o un mosaico. Si Jarvis responde
 con una pregunta, el micrófono se reabre con las mismas reglas de la ventana. Los plazos se
 cambian en `sdkconfig.defaults` (`CONFIG_JARVIS_TALK_WINDOW_SECONDS`,
 `CONFIG_JARVIS_TALK_WINDOW_SILENCE_MS`).
