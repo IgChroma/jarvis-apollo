@@ -17,24 +17,42 @@
  *
  * Los secretos NO van por argumentos (quedarían en el historial y en `ps`):
  * se leen de DEVICE_SHARED_SECRET / DASHBOARD_SHARED_SECRET en el entorno o,
- * en macOS, del Llavero (servicio JARVIS_KEYCHAIN_SERVICE, default "jarvis").
+ * del Llavero de macOS o del Administrador de credenciales de Windows (servicio
+ * JARVIS_KEYCHAIN_SERVICE, default "jarvis").
  *   bun tools/desk-simulator.ts ... --say "Hola, cómo andás?"     (una sola pregunta y sale)
  */
 
 const TTS_SAMPLE_RATE_HZ = 24000;
 
-// Entorno primero; si no está y hay Llavero (macOS), de ahí. Nunca de argv.
+// Entorno primero; si no está, del almacén de secretos del sistema. Nunca de argv.
 function readSecret(name: string): string {
   const fromEnvironment = process.env[name];
   if (fromEnvironment) {
     return fromEnvironment;
   }
-  if (process.platform !== 'darwin') {
-    return '';
-  }
   const service = process.env.JARVIS_KEYCHAIN_SERVICE ?? 'jarvis';
-  const result = Bun.spawnSync(['security', 'find-generic-password', '-s', service, '-a', name, '-w']);
-  return result.exitCode === 0 ? result.stdout.toString().trim() : '';
+  if (process.platform === 'darwin') {
+    const result = Bun.spawnSync(['security', 'find-generic-password', '-s', service, '-a', name, '-w']);
+    return result.exitCode === 0 ? result.stdout.toString().trim() : '';
+  }
+  if (process.platform === 'win32') {
+    // Administrador de credenciales: scripts/wincred.ps1 dump da NOMBRE<TAB>base64.
+    const script = `${import.meta.dir}\\..\\scripts\\wincred.ps1`;
+    const result = Bun.spawnSync([
+      'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-File', script, 'dump', service,
+    ]);
+    if (result.exitCode !== 0) {
+      return '';
+    }
+    for (const line of result.stdout.toString().split(/\r?\n/)) {
+      const [entryName, encoded] = line.split('\t');
+      if (entryName === name && encoded) {
+        return Buffer.from(encoded, 'base64').toString('utf8').trim();
+      }
+    }
+  }
+  return '';
 }
 
 function parseArguments(argv: readonly string[]) {

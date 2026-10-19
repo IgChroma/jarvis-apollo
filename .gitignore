@@ -27,3 +27,7 @@ firmware-backups/
 .DS_Store
 ._*
 node_modules/
+
+# Python
+__pycache__/
+*.pyc

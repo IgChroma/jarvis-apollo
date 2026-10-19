@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Cambia la voz de Jarvis entre Piper (local) y Azure (nube), o muestra cuál está
-# activa. Se corre desde la Mac.
+# activa. Se corre desde tu compu (macOS o Git Bash en Windows).
 #
 #   tools/voz.sh            -> muestra el estado (lo que ve el PROCESO, no el archivo)
 #   tools/voz.sh piper      -> Piper: local, gratis, acento mexicano
@@ -29,7 +29,8 @@ switch_to() {
     die "Falta AZURE_SPEECH_KEY en el Llavero: scripts/secrets.sh set AZURE_SPEECH_KEY"
   fi
   if grep -q '^TTS_PROVIDER=' "$CONFIG"; then
-    sed -i '' "s/^TTS_PROVIDER=.*/TTS_PROVIDER=$1/" "$CONFIG"
+    # Sin sed -i: la sintaxis cambia entre macOS (BSD) y Git Bash (GNU).
+    sed "s/^TTS_PROVIDER=.*/TTS_PROVIDER=$1/" "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
   else
     echo "TTS_PROVIDER=$1" >> "$CONFIG"
   fi

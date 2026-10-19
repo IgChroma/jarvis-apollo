@@ -7,8 +7,9 @@
 # Ojo: reconstruir corta cualquier conversación en curso y `docker logs` arranca
 # de cero (los logs también quedan en /data/apollo.log dentro del volumen).
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-require_macos
+require_secret_store
 require_pi
+PYTHON="$(jarvis_python)"
 
 BUILD="$REPO_ROOT/.cache/apollo"
 STAGE="$REPO_ROOT/.cache/apollo-deploy"
@@ -17,9 +18,14 @@ STAGE="$REPO_ROOT/.cache/apollo-deploy"
 # Lo que se sube: apps/agent, sin tests ni dependencias, y con package.json SIN
 # devDependencies. Fuera del monorepo "@apollo/typescript-config": "workspace:*"
 # no existe y el `bun install --production` del Dockerfile falla.
+# Con tar y no rsync: anda igual en macOS y en el Git Bash de Windows, que no
+# trae rsync. COPYFILE_DISABLE evita los ._* de macOS, que después bun test
+# intenta correr.
+export COPYFILE_DISABLE=1
 rm -rf "$STAGE" && mkdir -p "$STAGE"
-rsync -a --exclude node_modules --exclude __tests__ --exclude .dev.vars "$BUILD/apps/agent/" "$STAGE/"
-python3 -I - "$STAGE/package.json" <<'PY'
+tar -C "$BUILD/apps/agent" --exclude node_modules --exclude __tests__ --exclude .dev.vars \
+  --exclude '._*' -cf - . | tar -C "$STAGE" -xf -
+"$PYTHON" -I - "$STAGE/package.json" <<'PY'
 import json, sys
 path = sys.argv[1]
 data = json.load(open(path))
@@ -35,9 +41,18 @@ if [ "${usage:-0}" -ge 90 ]; then
   die "El disco de la Pi está al ${usage}%. Liberá espacio antes (docker builder prune -af)."
 fi
 
-# COPYFILE_DISABLE evita los ._* de macOS, que después bun test intenta correr.
-COPYFILE_DISABLE=1 rsync -az --delete --exclude .dev.vars --exclude '._*' \
-  "$STAGE/" "$JARVIS_PI:$JARVIS_PI_APOLLO_DIR/"
+# Reemplazo completo (lo que rsync --delete hacía): se desempaca en una carpeta
+# nueva, se le pasa el .dev.vars y recién ahí se cambia por la vieja, así un
+# corte a mitad de camino no deja el servidor a medio copiar. El volumen de
+# datos es de Docker y no vive en esta carpeta.
+directory="$JARVIS_PI_APOLLO_DIR"
+tar -C "$STAGE" -czf - . | ssh "$JARVIS_PI"   "rm -rf '$directory.new' && mkdir -p '$directory.new' && tar -C '$directory.new' -xzf -"
+ssh "$JARVIS_PI" "set -e
+  if [ -f '$directory/.dev.vars' ]; then cp -p '$directory/.dev.vars' '$directory.new/.dev.vars'; fi
+  rm -rf '$directory.old'
+  if [ -d '$directory' ]; then mv '$directory' '$directory.old'; fi
+  mv '$directory.new' '$directory'
+  rm -rf '$directory.old'"
 "$REPO_ROOT/scripts/push-secrets.sh" apollo
 ssh "$JARVIS_PI" "docker network inspect jarvis-mcp >/dev/null 2>&1 || docker network create jarvis-mcp >/dev/null;
   cd '$JARVIS_PI_APOLLO_DIR/docker' && docker compose up -d --build"

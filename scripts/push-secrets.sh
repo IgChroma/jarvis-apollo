@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Arma los archivos de configuración de la Pi con los secretos del Llavero y los
-# sube por ssh. Nada se escribe en el disco de la Mac: el contenido va de la
+# sube por ssh. Nada se escribe en el disco de tu compu: el contenido va de la
 # memoria al stdin de ssh, y en la Pi se crea con umask 077 (permisos 600).
 #
 #   scripts/push-secrets.sh apollo [--restart]     ~/apollo-server/.dev.vars
@@ -12,7 +12,7 @@
 #
 # La parte NO secreta del .dev.vars (modelos, interruptores) sale de server/config.env.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-require_macos
+require_secret_store
 require_pi
 
 TARGET="${1:-}"

@@ -26,7 +26,7 @@ exactamente qué se cambió y se puede seguir upstream.
 | [`server/`](server/) | Overlay sobre Apollo (rama `feat/node-host`, el host en Bun que corre en Docker). Toda la lógica de Jarvis. |
 | [`firmware/`](firmware/) | Overlay sobre apollo-firmware: port a la Waveshare ESP32-S3-Touch-LCD-4.3C, tablero LVGL con una mascota animada, wake word "Hey Jarvis", guardianes. |
 | [`infra/`](infra/) | Lo que corre en la Pi además de Apollo: servidores MCP (Maps, Calendar, Notion), WhatsApp (WAHA), parlante externo + Spotify, guardianes de disco y WiFi, tracking de costos. |
-| [`scripts/`](scripts/) | Secretos en el Llavero de macOS, deploy, detector de fugas. |
+| [`scripts/`](scripts/) | Secretos en el Llavero de macOS o el Administrador de credenciales de Windows, deploy, detector de fugas. |
 | [`tools/`](tools/) | Simulador de la placa (conversar por texto sin hardware), cambio de voz, benchmarks. |
 | [`docs/`](docs/) | [Arquitectura](docs/arquitectura.md) · [Customizaciones](docs/customizaciones.md) · [Secretos](docs/secretos.md) · [Lecciones y trampas](docs/lecciones.md) |
 
@@ -102,14 +102,15 @@ Lo principal (la lista completa, con el porqué de cada cosa, en
   este overlay es para esta.
 - **Servidor:** Raspberry Pi 4 (2 GB alcanza: el sistema entero con Apollo usa ~360 MB) con Raspberry Pi OS 64-bit
   y Docker. Fuente de **5 V / 3 A** (con un cargador de celular la Pi baja la CPU a 600 MHz).
-- **Mac** con ESP-IDF 5.5.2 para compilar el firmware (los scripts de secretos usan el
-  Llavero de macOS).
+- **Tu compu, macOS o Windows**, con ESP-IDF 5.5.2 para compilar el firmware. En Windows los
+  scripts corren en **Git Bash** (viene con Git for Windows) y los secretos van al
+  Administrador de credenciales; en macOS, al Llavero.
 - **Cuentas:** [OpenRouter](https://openrouter.ai) (obligatoria: LLM, STT, embeddings y
   router con una sola key; unos USD 5 de crédito alcanzan para meses). Opcionales: Azure
   Speech (voz argentina, free tier), Google Cloud (Maps y Calendar), Tavily (búsqueda web),
   Notion, Gmail.
 
-### 1. Preparar el repo y los secretos (en la Mac)
+### 1. Preparar el repo y los secretos (en tu compu)
 
 ```bash
 git clone <este repo> jarvis-apollo && cd jarvis-apollo
@@ -124,8 +125,8 @@ scripts/secrets.sh status                     # qué falta (nunca muestra valore
 ```
 
 Todos los secretos (y tus datos personales: dirección, teléfonos, mail) viven en el **Llavero
-de macOS** y viajan a la Pi por ssh sin tocar el disco de la Mac. Ver
-[docs/secretos.md](docs/secretos.md).
+de macOS** o en el **Administrador de credenciales de Windows**, y viajan a la Pi por ssh sin
+tocar el disco de tu compu. Ver [docs/secretos.md](docs/secretos.md).
 
 ### 2. Preparar la Pi
 
@@ -162,14 +163,21 @@ bun tools/desk-simulator.ts --host "$JARVIS_APOLLO_HOST" --say "Hola, ¿quién s
 ### 4. Compilar y flashear el firmware
 
 ```bash
-# Una vez: ESP-IDF 5.5.2 en ~/esp/esp-idf (./install.sh esp32s3) y brew install cmake ninja
+# Una vez, en macOS: ESP-IDF 5.5.2 en ~/esp/esp-idf (./install.sh esp32s3) y brew install cmake ninja
+# Una vez, en Windows: ESP-IDF 5.5.2 (git clone -b v5.5.2 --recursive + install.ps1 esp32s3,esp32p4)
+#   en una ruta SIN espacios, y en jarvis.env: JARVIS_IDF_ENV (su export.ps1),
+#   JARVIS_FIRMWARE_TREE y JARVIS_FLASH_PORT (COM3...). Ver jarvis.env.example.
 
-# ANTES de flashear por primera vez, backup de los 16 MB de fábrica:
+# ANTES de flashear por primera vez, backup de los 16 MB de fábrica
+# (en Windows, --port COM3 o el que corresponda; esptool viene con ESP-IDF):
 esptool --port /dev/cu.usbmodem101 read-flash 0 0x1000000 backup-fabrica.bin
 
 firmware/apply.sh                            # clona apollo-firmware 2.7.1 + overlay
-firmware/build.sh ~/esp/jarvis-apollo-firmware flash
+firmware/build.sh "" flash                   # árbol de JARVIS_FIRMWARE_TREE; o pasá la ruta
 ```
+
+En Windows `build.sh` corre desde Git Bash y llama a ESP-IDF por PowerShell, porque ESP-IDF no
+soporta Git Bash.
 
 `build.sh` saca la URL de `jarvis.env` y el secreto del Llavero, los inyecta en el build y
 borra el temporal (cada corrida recompila todo, ~5 min; para iterar sobre el código usá

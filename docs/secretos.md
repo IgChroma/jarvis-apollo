@@ -1,9 +1,10 @@
 # Secretos y datos privados
 
-**Regla:** ningún secreto vive en un archivo del repo ni en un archivo de la Mac, y ninguno
+**Regla:** ningún secreto vive en un archivo del repo ni en un archivo de tu compu, y ninguno
 viaja como argumento de un comando (quedaría en el historial del shell y visible en `ps`).
-Los secretos viven en el **Llavero de macOS**; los scripts los leen a memoria y los mandan por
-stdin a donde tengan que ir.
+Los secretos viven en el **Llavero de macOS** o en el **Administrador de credenciales de
+Windows** (en el resto de los docs, "Llavero" nombra a los dos); los scripts los leen a memoria
+y los mandan por stdin a donde tengan que ir.
 
 Esto incluye los datos personales que no son contraseñas pero no deberían terminar en un
 repo: tu dirección (origen de los viajes), tu número y los de tus contactos de WhatsApp, tu
@@ -16,7 +17,9 @@ secrets.manifest          qué secretos existen y a qué destino va cada uno (si
 jarvis.env                dónde está la Pi y la URL del servidor (no secreto, NO se commitea)
 server/config.env         modelos e interruptores de Apollo (no secreto, NO se commitea)
 
-Llavero de macOS          servicio "jarvis", cuenta = NOMBRE de la variable
+Llavero (macOS)           servicio "jarvis", cuenta = NOMBRE de la variable
+Administrador de          credencial genérica "jarvis.NOMBRE" (Windows, vía scripts/wincred.ps1)
+credenciales (Windows)
    │
    ├─ scripts/push-secrets.sh ──ssh/stdin──▶ Pi: ~/apollo-server/.dev.vars       (600)
    │                                          ~/mcp-servers/.env                  (600)
@@ -24,7 +27,7 @@ Llavero de macOS          servicio "jarvis", cuenta = NOMBRE de la variable
    │                                          ~/whatsapp/.env                     (600)
    │                                          /etc/jarvis-speaker/token           (640 root:tu-grupo)
    ├─ firmware/build.sh ──archivo temporal 600, borrado al terminar──▶ binario de la placa
-   └─ tools/desk-simulator.ts ──security──▶ memoria del proceso
+   └─ tools/desk-simulator.ts ──security / wincred.ps1──▶ memoria del proceso
 ```
 
 ## Uso
@@ -38,7 +41,12 @@ scripts/secrets.sh set-file GOOGLE_OAUTH_CLIENT_JSON_B64 client_secret.json   # 
 scripts/push-secrets.sh all --restart             # sube todo y recrea los contenedores
 ```
 
-Para verlos o editarlos a mano: **Acceso a Llaveros** → buscar `jarvis.`.
+Para verlos o editarlos a mano: en macOS, **Acceso a Llaveros** → buscar `jarvis.`; en Windows,
+**Panel de control → Administrador de credenciales → Credenciales de Windows** → `jarvis.`.
+
+En Windows todo corre desde **Git Bash** (viene con Git for Windows). El Administrador de
+credenciales guarda hasta 2560 bytes por secreto: alcanza para keys, tokens y el JSON de OAuth
+de Google en base64.
 
 Un secreto nuevo se agrega primero a `secrets.manifest` (nombre, destinos, si es requerido);
 `secrets.sh` rechaza nombres que no estén ahí, y `push-secrets.sh` rechaza un `server/config.env`
@@ -48,7 +56,8 @@ que contenga un nombre del manifiesto (así nadie "resuelve" un apuro pegando la
 
 - **`security add-generic-password -w` sin valor** pide el secreto de forma oculta: es la única
   forma de cargar un valor con espacios sin que pase por argv. Los generados y los archivos
-  (base64, sin espacios) se le pasan a `security -i` **por stdin**.
+  (base64, sin espacios) se le pasan a `security -i` **por stdin**. En Windows, `secrets.sh` lo
+  pide oculto con `read -s` y `wincred.ps1` lo recibe por stdin.
 - **`.dev.vars` sin comillas cuando no hacen falta**: así `grep ^X= | cut -d= -f2-` sigue
   funcionando en la Pi. Con espacios o símbolos van entre comillas simples, que docker compose
   toma literal (un `$` en una contraseña no se interpola).
@@ -56,7 +65,7 @@ que contenga un nombre del manifiesto (así nadie "resuelve" un apuro pegando la
   `.bin`, el `sdkconfig` y la carpeta `build/` del árbol del firmware lo contienen. No compartas
   un binario compilado ni ese árbol; compartí el repo y que cada uno compile con su secreto.
   `sdkconfig.defaults` (que sí se commitea) tiene la URL y el token vacíos a propósito.
-- **Cada `firmware/build.sh` recompila todo** (~5 min en una Mac M): borra el `sdkconfig` para
+- **Cada `firmware/build.sh` recompila todo** (~5 min en una Mac M, algo más en Windows): borra el `sdkconfig` para
   que los defaults y el secreto se apliquen de nuevo. Para iterar sobre el código del firmware,
   después del primer `build.sh` alcanza con `idf.py build` (o `idf.py -p PUERTO -b 460800 flash`)
   dentro del árbol, que es incremental.
@@ -72,7 +81,7 @@ que contenga un nombre del manifiesto (así nadie "resuelve" un apuro pegando la
 
 ```bash
 git config core.hooksPath .githooks       # una vez: el hook corre el chequeo en cada commit
-python3 -I scripts/check-leaks.py         # todo el repo, a mano
+python3 -I scripts/check-leaks.py         # todo el repo, a mano (en Windows: python)
 ```
 
 `check-leaks.py` busca **los valores reales** de tus secretos (los lee del Llavero, sin

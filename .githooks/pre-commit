@@ -2,4 +2,11 @@
 # Frena el commit si lo que está en stage tiene un secreto (valor del Llavero o
 # patrón de key conocido). Se activa una vez con:
 #   git config core.hooksPath .githooks
-exec python3 -I "$(git rev-parse --show-toplevel)/scripts/check-leaks.py" --staged
+# En Windows "python3" suele ser el atajo de la Store que no corre nada.
+for candidate in python3 python py; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys' >/dev/null 2>&1; then
+    exec "$candidate" -I "$(git rev-parse --show-toplevel)/scripts/check-leaks.py" --staged
+  fi
+done
+echo "✗ pre-commit: falta Python para revisar secretos." >&2
+exit 1

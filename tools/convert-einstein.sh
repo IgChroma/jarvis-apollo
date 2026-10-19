@@ -17,8 +17,17 @@ set -euo pipefail
 #   PY=python-con-Pillow FIRMWARE=~/esp/jarvis-apollo-firmware tools/convert-einstein.sh ...
 SRC="${1:?uso: convert-einstein.sh <Sprite.picopixel> [destino]}"
 DST="${2:-firmware/overlay/main/assets/einstein}"
-FIRMWARE="${FIRMWARE:-$HOME/esp/jarvis-apollo-firmware}"   # trae scripts/Image_Converter/LVGLImage.py
-PY="${PY:-python3}"                                          # necesita Pillow
+FIRMWARE="${FIRMWARE:-${JARVIS_FIRMWARE_TREE:-$HOME/esp/jarvis-apollo-firmware}}"   # trae scripts/Image_Converter/LVGLImage.py
+# Necesita Pillow. En Windows "python3" suele ser el atajo vacío de la Store.
+if [ -z "${PY:-}" ]; then
+  for candidate in python3 python py; do
+    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys' >/dev/null 2>&1; then
+      PY="$candidate"
+      break
+    fi
+  done
+fi
+PY="${PY:?falta Python}"
 WIDTH=150; HEIGHT=163
 MODES="idle waiting review waving jumping failed running run-right run-left"   # estados + reacciones y paseos (2026-10-01)
 

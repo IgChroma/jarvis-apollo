@@ -13,6 +13,8 @@ Uso:
   python3 -I scripts/check-leaks.py --staged        # solo lo que está en stage (hook pre-commit)
   ssh pi 'cat ~/apollo-server/.dev.vars' | python3 -I scripts/check-leaks.py --env-from-stdin
 
+En Windows, `python` en vez de `python3` (el de la Store suele ser un atajo vacío).
+
 Sale con 1 si encuentra algo.
 """
 import base64
@@ -79,15 +81,37 @@ def manifest_names() -> list[str]:
     return names
 
 
-def keychain_secrets() -> dict[str, bytes]:
-    if sys.platform != 'darwin':
-        return {}
-    found = {}
-    for name in manifest_names():
-        result = subprocess.run(['security', 'find-generic-password', '-s', SERVICE, '-a', name, '-w'],
+def stored_values() -> dict[str, bytes]:
+    """NOMBRE -> valor de cada secreto guardado (Llavero o Administrador de credenciales)."""
+    names = manifest_names()
+    if sys.platform == 'darwin':
+        values = {}
+        for name in names:
+            result = subprocess.run(['security', 'find-generic-password', '-s', SERVICE, '-a', name, '-w'],
+                                    capture_output=True, check=False)
+            if result.returncode == 0:
+                values[name] = result.stdout.strip()
+        return values
+    if sys.platform == 'win32':
+        # Una sola llamada: wincred.ps1 dump devuelve NOMBRE<TAB>base64 por línea.
+        result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                                 '-File', str(REPO_ROOT / 'scripts' / 'wincred.ps1'), 'dump', SERVICE],
                                 capture_output=True, check=False)
-        value = result.stdout.strip()
-        if result.returncode == 0 and len(value) >= MIN_SECRET_LENGTH:
+        if result.returncode != 0:
+            return {}
+        values = {}
+        for line in result.stdout.decode('utf-8', 'replace').splitlines():
+            name, _, encoded = line.strip().partition('\t')
+            if name in names:
+                values[name] = base64.b64decode(encoded).strip()
+        return values
+    return {}
+
+
+def keychain_secrets() -> dict[str, bytes]:
+    found = {}
+    for name, value in stored_values().items():
+        if len(value) >= MIN_SECRET_LENGTH:
             found[f'Llavero:{name}'] = value
             if name.endswith('_B64'):
                 try:
@@ -114,6 +138,11 @@ def stdin_secrets() -> dict[str, bytes]:
 
 
 def main() -> int:
+    # La consola de Windows usa cp1252 y no sabe escribir ✓/✗: sin esto el hook
+    # de pre-commit se cae justo al decir que no hay fugas.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8', errors='replace')
     staged = '--staged' in sys.argv
     secrets = keychain_secrets()
     if '--env-from-stdin' in sys.argv:

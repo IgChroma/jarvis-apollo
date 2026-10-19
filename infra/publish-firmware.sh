@@ -17,6 +17,7 @@
 # buena tras 60 s seguidos conectada; si se cuelga antes, el bootloader vuelve a la anterior.
 source "$(dirname "${BASH_SOURCE[0]}")/../scripts/lib.sh"
 require_pi
+PYTHON="$(jarvis_python)"
 
 BIN="${1:?ruta al .bin}"
 VERSION="${2:?versión, p. ej. 2.7.3}"
@@ -27,7 +28,7 @@ PI="$JARVIS_PI"
 [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+)*$ ]] || { echo "Versión inválida: $VERSION" >&2; exit 1; }
 
 # esp_app_desc_t arranca en 0x20 del binario; el campo version (32 bytes) está en 0x30.
-EMBEDDED=$(python3 - "$BIN" <<'PY'
+EMBEDDED=$("$PYTHON" - "$BIN" <<'PY'
 import sys, struct
 data = open(sys.argv[1], 'rb').read(0x100)
 magic = struct.unpack_from('<I', data, 0x20)[0]
@@ -41,7 +42,7 @@ if [[ "$EMBEDDED" != "$VERSION" ]]; then
   exit 1
 fi
 
-MANIFEST=$(python3 -c 'import json,sys; print(json.dumps({"version": sys.argv[1], "key": f"firmware/{sys.argv[1]}.bin", **({"changelog": sys.argv[2][:500]} if sys.argv[2] else {})}))' "$VERSION" "$CHANGELOG")
+MANIFEST=$("$PYTHON" -c 'import json,sys; print(json.dumps({"version": sys.argv[1], "key": f"firmware/{sys.argv[1]}.bin", **({"changelog": sys.argv[2][:500]} if sys.argv[2] else {})}))' "$VERSION" "$CHANGELOG")
 
 scp -q "$BIN" "$PI:/tmp/firmware-$VERSION.bin"
 printf '%s' "$MANIFEST" | ssh "$PI" "cat > /tmp/firmware-latest.json && \

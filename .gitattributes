@@ -1,0 +1,5 @@
+# Los scripts de bash y el hook se guardan con LF también en Windows: un bash de
+# Linux (la Pi) o de macOS no tolera los \r de CRLF.
+*.sh text eol=lf
+.githooks/* text eol=lf
+*.ps1 text eol=crlf
