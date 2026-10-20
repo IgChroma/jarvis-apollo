@@ -82,6 +82,58 @@ export const homeTileSchema = z.discriminatedUnion('kind', [
 
 export type HomeTile = z.infer<typeof homeTileSchema>;
 
+// Agenda v2 (docs/vistas-tablero.md): categoría del ícono de un evento. La
+// placa no tiene emoji en sus fuentes; traduce cada categoría a un glifo propio.
+export const AGENDA_ICON_LIST = [
+  'salud',
+  'auto',
+  'cumple',
+  'compras',
+  'casa',
+  'pago',
+  'viaje',
+  'trabajo',
+  'escuela',
+  'deporte',
+  'comida',
+  'mascota',
+  'reunion',
+  'otro',
+] as const;
+
+export const agendaIconSchema = z.enum(AGENDA_ICON_LIST);
+
+export type AgendaIcon = z.infer<typeof agendaIconSchema>;
+
+// Una entrada de agenda: la del tablero (`agendaList`) y la de la vista de un
+// día (`agenda_day`). `id`, `icon` y `detail` son opcionales: una placa vieja
+// los ignora y sigue dibujando `title` + `whenLabel`.
+export const agendaEntrySchema = z.object({
+  id: z.string().min(1).max(200).optional(),
+  title: z.string().min(1),
+  icon: agendaIconSchema.optional(),
+  whenLabel: z.string().min(1),
+  detail: z
+    .object({
+      fullTitle: z.string().min(1),
+      dateLabel: z.string().min(1),
+      timeLabel: z.string().min(1),
+      location: z.string().min(1).optional(),
+      description: z.string().min(1).max(200).optional(),
+      sourceLabel: z.string().min(1),
+    })
+    .optional(),
+});
+
+export type AgendaEntry = z.infer<typeof agendaEntrySchema>;
+
+// Tarjeta de lista del centro: pendientes (interna) y compras (Home Assistant).
+const listCardSchema = z.object({
+  listName: z.string().min(1),
+  count: z.number().int().nonnegative(),
+  itemList: z.array(z.string().min(1)),
+});
+
 export const deviceToServerMessageSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('hello'),
@@ -193,6 +245,14 @@ export const deviceToServerMessageSchema = z.discriminatedUnion('type', [
     action: homeAssistantTileActionSchema,
     ts: z.number().int().nonnegative(),
   }),
+  // Tocar un día del calendario del mes (Agenda v2). La fecha se acepta como
+  // texto cualquiera y la valida el servidor (host/actor.ts): una basura se
+  // ignora con una línea de log en vez de devolverle un error a la placa.
+  z.object({
+    type: z.literal('agenda_day_request'),
+    date: z.string().min(1).max(40),
+    ts: z.number().int().nonnegative(),
+  }),
 ]);
 
 export type DeviceToServerMessage = z.infer<typeof deviceToServerMessageSchema>;
@@ -286,21 +346,12 @@ export const serverToDeviceMessageSchema = z.discriminatedUnion('type', [
         humidityPercent: z.number().optional(),
       })
       .optional(),
-    agendaList: z
-      .array(
-        z.object({
-          title: z.string().min(1),
-          whenLabel: z.string().min(1),
-        }),
-      )
-      .optional(),
-    pending: z
-      .object({
-        listName: z.string().min(1),
-        count: z.number().int().nonnegative(),
-        itemList: z.array(z.string().min(1)),
-      })
-      .optional(),
+    agendaList: z.array(agendaEntrySchema).max(6).optional(),
+    // Lista interna de pendientes de Jarvis.
+    pending: listCardSchema.optional(),
+    // Agenda v2: lista de compras de Home Assistant (todo.shopping_list). No
+    // viene sin HA o sin la lista; vacía viene con count 0.
+    shopping: listCardSchema.optional(),
     travel: z
       .object({
         label: z.string().min(1),
@@ -341,6 +392,13 @@ export const serverToDeviceMessageSchema = z.discriminatedUnion('type', [
           .optional(),
       })
       .optional(),
+  }),
+  // Respuesta a `agenda_day_request`: lo de ese día, hasta 12 entradas.
+  z.object({
+    type: z.literal('agenda_day'),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    dateLabel: z.string().min(1),
+    entryList: z.array(agendaEntrySchema).max(12),
   }),
   z.object({
     type: z.literal('background_result'),

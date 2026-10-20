@@ -99,8 +99,9 @@ Detalles de lo que manda el servidor (implementación, `server/overlay/apps/agen
   "Cerrada", "Movimiento", "Sí"/"No"...). Orden: interruptores, climas, sensores; cada
   grupo por nombre.
 - **`monthCalendar` sale siempre**, con o sin Home Assistant (sin HA, `eventDayList` y
-  `todayEventList` vacíos): la grilla del mes con hoy resaltado sirve sola. Marca solo
-  eventos de calendario, no recordatorios. En `todayEventList` van primero los que
+  `todayEventList` vacíos): la grilla del mes con hoy resaltado sirve sola. Marca los
+  días con eventos de calendario y, desde la Agenda v2, también los días con recordatorios
+  (`todayEventList` sigue siendo solo de calendario). En `todayEventList` van primero los que
   tienen hora, en orden, y después los de todo el día; un evento con hora que empezó
   otro día y sigue hoy cuenta como "Todo el día".
 - **`home` sale si hay Home Assistant o hay dólar**: sin HA pero con dólar viene
@@ -157,3 +158,145 @@ Qué se lee:
 - **Por voz** (`casa_listar`, `casa_estado`, `casa_controlar`): la misma etiqueta y la misma
   conexión; después de un cambio por voz también se empuja el tablero. Reglas en
   [home-assistant-setup.md](home-assistant-setup.md#la-casa-por-voz-add-on-050).
+
+## Agenda v2 (add-on 0.6.0): eventos tocables, agenda por día y lista de compras
+
+### Cambios en `dashboard`
+
+**`agendaList`:** cada entrada suma campos opcionales. Una placa vieja los ignora; `title` y
+`whenLabel` siguen igual.
+
+```jsonc
+{
+  "id": "hogar:01JB…",          // estable: "<calendario>:<uid>" o "recordatorio:<id>"
+  "title": "Dentista",          // título corto (≤ 18 caracteres)
+  "icon": "salud",              // categoría para el ícono (lista cerrada, ver abajo)
+  "whenLabel": "en 3 días",     // "hoy 11:00", "mañana 9:30", "en 3 días"
+  "detail": {
+    "fullTitle": "Turno con la dentista en OdontoSalud",
+    "dateLabel": "jueves 23 de octubre",
+    "timeLabel": "11:00 a 12:00",  // o "Todo el día"
+    "location": "OdontoSalud, Ing. Maschwitz",   // opcional
+    "description": "…",                          // opcional, ≤ 200 caracteres
+    "sourceLabel": "Calendario Hogar"            // o "Recordatorio de Jarvis"
+  }
+}
+```
+
+- `agendaList` lleva hasta **6** entradas.
+- El recorte de `title` pasa de 22 a **40 caracteres**: el "…" del final lo pone la placa
+  según el ancho real de la columna.
+
+**Íconos (`icon`):** la placa no puede dibujar emoji, porque sus fuentes no los tienen. La lista
+cerrada es: `salud`, `auto`, `cumple`, `compras`, `casa`, `pago`, `viaje`, `trabajo`,
+`escuela`, `deporte`, `comida`, `mascota`, `reunion`, `otro`.
+
+- La placa traduce cada categoría a un glifo de su fuente de íconos o, si no lo hay, a una
+  marca de color.
+- En Home Assistant el evento se guarda con emoji en el título ("🦷 Dentista").
+
+**`monthCalendar.eventDayList`:** suma los días con recordatorios de Jarvis, además de los de
+los calendarios.
+
+**`pending` y `shopping` (tarjeta alternable):** la tarjeta del centro alterna entre dos listas.
+- **`pending`:** sigue siendo la lista interna de pendientes de Jarvis, sin cambios.
+- **`shopping`:** clave **nueva**, con la misma forma (`listName`, `count`, `itemList`). Sale de
+  **`todo.shopping_list`** de Home Assistant, con `listName: "Compras"` y solo los ítems sin
+  completar. No viene si no hay Home Assistant o si la lista no existe.
+- **En la placa:** la cabecera muestra el nombre de la lista activa entre dos flechas,
+  "‹ PENDIENTES ›". Un toque firme en cualquiera de las flechas (blanco de unos 40 px) pasa a la
+  otra lista. La placa recuerda la última elegida hasta reiniciar.
+- **Lista ausente:** si una de las dos no vino, no se ofrece y las flechas no se muestran. Con
+  `pending` presente, que falte `shopping` quiere decir "no hay lista de compras"; un mensaje sin
+  `pending` (el otro emisor) deja las dos listas como estaban.
+
+### Agenda de un día
+
+**Placa → servidor:**
+
+```jsonc
+{ "type": "agenda_day_request", "date": "2026-10-23", "ts": 123 }
+```
+
+**Servidor → placa:**
+
+```jsonc
+{
+  "type": "agenda_day",
+  "date": "2026-10-23",
+  "dateLabel": "jueves 23 de octubre",
+  "entryList": [ /* mismas entradas que agendaList, hasta 12, ordenadas por hora */ ]
+}
+```
+
+Un día sin nada llega con `entryList: []`.
+
+### En la pantalla
+
+- **Tocar un evento** (en la agenda de Inicio o en la de un día) abre un **detalle modal**:
+  - muestra título completo, fecha, horario, lugar, descripción y origen;
+  - se cierra con un botón **Cerrar**.
+- **Tocar un día del calendario del mes** pide `agenda_day` y muestra la **vista de ese día**:
+  - la lista de eventos, cada uno tocable;
+  - un botón **Cancelar** que vuelve a Inicio.
+  - Mientras espera la respuesta muestra "Cargando…"; si no llega en 5 s, "No pude traer la
+    agenda".
+
+### Voz
+
+- **`agenda_agregar`** crea un evento en `calendar.hogar` (configurable) con
+  `calendar.create_event`:
+  - **Obligatorios:** fecha y hora. "Todo el día" también vale.
+  - **Opcionales:** lugar, duración (default 1 h) y descripción.
+  - **Los arma el modelo:** `titulo_corto` (≤ 18 caracteres), `emoji` y `icono` (de la lista
+    cerrada).
+  - **En Home Assistant:** el resumen guardado es `"<emoji> <titulo_corto>"` y la descripción
+    lleva el título largo.
+  - **Nada de preguntas extra:** no pregunta cómo va a ir ni ofrece calcular la salida, y no
+    crea recordatorios aparte.
+- **`agenda_listar`:** eventos de un rango de fechas.
+- **`agenda_borrar`:** borra por id (`calendar/event/delete` por WebSocket). Solo en
+  calendarios locales.
+- **Fuera de `agenda_crear`:** `avisar_para_salir` sale de esa intención y queda solo en
+  `viaje`, donde se pide explícitamente.
+- **Listas:** `read_list`, `add_to_list` y `remove_from_list` deciden por el nombre de la lista.
+  - **Compras** ("lista de compras", "súper", "compras"): van a `todo.shopping_list`
+    (`todo.get_items`, `todo.add_item`, `todo.remove_item`) cuando hay Home Assistant.
+  - **Pendientes:** siguen en la lista interna de Jarvis.
+
+### Detalles del servidor (implementación, add-on 0.6.0)
+
+Lo que el contrato de arriba no fija y el servidor resolvió así. Todo es aditivo: no cambia
+ningún campo ni su tipo.
+
+- **`id` de una repetición:** un evento que es una instancia de una serie lleva además
+  `#<recurrence_id>` ("hogar:abc@google.com#20261019T220000Z"), porque borrar sin él borra la
+  serie entera. Un evento sin `uid` (alguna integración de HA) viaja **sin `id`**. La placa
+  tiene que tratar el `id` como texto opaco de hasta 200 caracteres.
+- **`icon`:** el servidor lo manda siempre (`otro` si no hay emoji reconocible). Los
+  recordatorios de Jarvis también derivan el ícono de un emoji inicial; casi siempre son `otro`.
+- **`whenLabel` en `agendaList`:** si falta menos de una hora, "en 40 minutos" (como antes);
+  si no, "hoy 11:00", "mañana 9:30" (sin el cero de adelante), y desde pasado mañana "en N
+  días", contados por día de calendario. Los de todo el día: "hoy", "mañana", "en N días".
+- **`whenLabel` en `agenda_day`:** como la fecha ya está en la cabecera, es la hora ("8:00")
+  o "Todo el día". Van primero los de todo el día y los que empezaron otro día y siguen, y
+  después el resto por hora, recordatorios incluidos.
+- **Largos del detalle** (totales, con el "…"): `fullTitle` y `location` hasta 100,
+  `description` hasta 200 y conserva los saltos de línea. `timeLabel`: "11:00 a 12:00",
+  "11:00" si no tiene fin, "Todo el día", y "9:00 a 18:00 del viernes 23" si termina otro día.
+  `dateLabel` de un evento de varios días: "jueves 22 de octubre al sábado 24 de octubre".
+- **`fullTitle` y `description` de un evento de HA:** los que crea `agenda_agregar` guardan
+  el título largo en la primera línea de la descripción y el resto después de una línea en
+  blanco. El servidor lo separa solo si el resumen empieza con emoji y esa primera línea
+  comparte una palabra con el título corto; si no, `fullTitle` es el título y la descripción
+  va entera.
+- **`sourceLabel`:** "Calendario " + el nombre amigable del calendario en HA ("Calendario
+  Hogar"); "Recordatorio de Jarvis" para los recordatorios.
+- **Qué calendarios:** la regla de siempre (los etiquetados `jarvis`; si ninguno, todos) **más
+  el de `agenda_calendar`** si existe, para que lo que se agenda por voz se vea aunque no
+  tenga la etiqueta. Vale para `agendaList`, `monthCalendar`, `agenda_day` y `agenda_listar`.
+- **`shopping` vacía:** si la lista existe pero no tiene nada por comprar, viene con
+  `count: 0` e `itemList: []`, así la pestaña se ofrece igual. `pending` vacía sigue sin venir.
+- **`agenda_day_request` inválido:** una fecha que no es `AAAA-MM-DD` real (o fuera de
+  2000-2100) se ignora con una línea de log; no hay respuesta ni error a la placa. Sin Home
+  Assistant, o si no responde, el día llega igual con los recordatorios.

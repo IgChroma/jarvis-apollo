@@ -9,6 +9,13 @@ import {
 } from '@/agents/dashboard';
 import { createDeskToolEffects } from '@/agents/effects';
 import {
+  DEFAULT_AGENDA_TIMEZONE,
+  buildAgendaDayMessage,
+  parseIsoLocalDate,
+  resolveLocalDayRange,
+  type AgendaCalendarEvent,
+} from '@/dashboard/agenda';
+import {
   deliverDeskDeviceNotification,
   parsePendingDeviceMessageAsNotification,
 } from '@/agents/notify';
@@ -1251,6 +1258,71 @@ export function createApolloHostActor(dependencies: ApolloHostActorDependencies)
     });
   }
 
+  // Agenda v2: tocar un día del calendario del mes. Los eventos de Home
+  // Assistant los lee host/main.ts (tiene el cliente); los recordatorios, el
+  // scheduler de acá. Sin HA el día sale solo con recordatorios.
+  let agendaEventReader:
+    | ((input: {
+        readonly timezone: string;
+        readonly startMilliseconds: number;
+        readonly endMilliseconds: number;
+      }) => Promise<readonly AgendaCalendarEvent[]>)
+    | undefined;
+
+  async function handleAgendaDayRequest(
+    connection: HostConnection,
+    deviceMessage: Extract<DeviceToServerMessage, { type: 'agenda_day_request' }>,
+  ): Promise<void> {
+    const date = parseIsoLocalDate(deviceMessage.date);
+    if (date === undefined) {
+      // Basura (o una fecha imposible): se ignora. La placa muestra "No pude
+      // traer la agenda" a los 5 s.
+      console.log(
+        JSON.stringify({
+          level: 'warn',
+          message: 'agenda_day_fecha_invalida',
+          fecha: deviceMessage.date.slice(0, 40),
+        }),
+      );
+      return;
+    }
+    const location = await resolveWeatherLocation().catch(() => undefined);
+    const timezone = location?.timezone ?? DEFAULT_AGENDA_TIMEZONE;
+    const range = resolveLocalDayRange({ date, timezone });
+    const [calendarEventList, reminderRowList] = await Promise.all([
+      (agendaEventReader === undefined
+        ? Promise.resolve([] as readonly AgendaCalendarEvent[])
+        : agendaEventReader({ timezone, ...range })
+      ).catch((error: unknown) => {
+        // HA caído: el día va con lo que haya (los recordatorios) en vez de
+        // dejar a la placa esperando.
+        console.log(
+          JSON.stringify({
+            level: 'warn',
+            message: 'agenda_day_calendario_fallo',
+            detail: error instanceof Error ? error.message : String(error),
+          }),
+        );
+        return [] as readonly AgendaCalendarEvent[];
+      }),
+      listReminderRowList().catch(() => []),
+    ]);
+    connection.send(
+      encodeServerToDeviceMessage(
+        buildAgendaDayMessage({
+          date,
+          timezone,
+          calendarEventList,
+          reminderList: reminderRowList.map((row) => ({
+            id: row.id,
+            text: row.message,
+            dueAtMilliseconds: new Date(row.firesAtIso).getTime(),
+          })),
+        }),
+      ),
+    );
+  }
+
   async function handleTelemetry(
     deviceMessage: Extract<DeviceToServerMessage, { type: 'telemetry' }>,
   ): Promise<void> {
@@ -1433,6 +1505,21 @@ export function createApolloHostActor(dependencies: ApolloHostActorDependencies)
         handleHomeAssistantAction(deviceMessage);
         break;
       }
+      case 'agenda_day_request': {
+        noteUserActivity();
+        // Sin await: leer los calendarios puede tardar hasta el timeout de HA
+        // y la placa tiene que poder seguir mandando mientras tanto.
+        void handleAgendaDayRequest(connection, deviceMessage).catch((error: unknown) => {
+          console.log(
+            JSON.stringify({
+              level: 'warn',
+              message: 'agenda_day_fallo',
+              detail: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        });
+        break;
+      }
       case 'mcp': {
         deviceMcpRequestRegistry.resolvePendingRequest(deviceMessage.payload);
         break;
@@ -1459,6 +1546,9 @@ export function createApolloHostActor(dependencies: ApolloHostActorDependencies)
     },
     attachHomeAssistantActionHandler(handler: NonNullable<typeof homeAssistantActionHandler>): void {
       homeAssistantActionHandler = handler;
+    },
+    attachAgendaEventReader(reader: NonNullable<typeof agendaEventReader>): void {
+      agendaEventReader = reader;
     },
     callDeviceTool,
     currentFocusState,

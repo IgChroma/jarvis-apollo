@@ -116,6 +116,8 @@ export const ROUTER_INTENT_LIST: readonly RouterIntent[] = [
     id: 'agenda_leer',
     description: 'consultar qué eventos o compromisos hay en el calendario o la agenda',
     toolPatternList: [
+      // Agenda v2: los calendarios de Home Assistant (solo existe con HA).
+      nativeTool('agenda_listar'),
       mcpTool('list_events'),
       mcpTool('search_events'),
       nativeTool('list_reminders'),
@@ -126,18 +128,23 @@ export const ROUTER_INTENT_LIST: readonly RouterIntent[] = [
     description:
       'agregar, agendar, mover o borrar un evento en el calendario, o contar que va a ir a algún lado a una hora',
     toolPatternList: [
+      // Agenda v2: con Home Assistant, la agenda es el calendario de la casa
+      // (tools/agenda.ts). Sin HA estas no existen y quedan las de Google
+      // Calendar por MCP, para quien lo tenga configurado.
+      nativeTool('agenda_agregar'),
+      nativeTool('agenda_listar'),
+      nativeTool('agenda_borrar'),
       mcpTool('create_event'),
       mcpTool('delete_event'),
       mcpTool('list_events'),
       mcpTool('search_events'),
-      // Acá es donde de verdad hace falta, y no era obvio.
-      //
-      // Medido con Jev: "voy a ir al dentista a las tres" cae en agenda_crear
-      // con 0,66 y en viaje con solo 0,17; "a las 8 juego al fútbol", 0,82.
-      // Las frases que dicen "avisame cuándo salir" sí caen en viaje (0,78 a
-      // 1,0). O sea: el caso implícito —que es el que se pidió— vive acá.
-      // Dejarla solo en 'viaje' la habría vuelto inalcanzable justo para eso.
-      nativeTool('avisar_para_salir'),
+      // avisar_para_salir YA NO va acá (2026-10-19). Antes vivía en esta
+      // intención a propósito: Jev manda "voy a ir al dentista a las tres" a
+      // agenda_crear (0,66) y no a viaje (0,17), y la idea era ofrecer la hora
+      // de salida en ese caso implícito. El dueño decidió lo contrario: agendar
+      // es "día y hora y listo", sin preguntar cómo va a ir ni ofrecer la
+      // salida. Si quiere el aviso lo pide ("avisame cuándo salir"), y eso cae
+      // en viaje (0,78 a 1,0), donde la herramienta sigue estando.
       // Si el calendario está caído, el modelo deja un recordatorio local.
       nativeTool('set_reminder'),
     ],
@@ -159,6 +166,7 @@ export const ROUTER_INTENT_LIST: readonly RouterIntent[] = [
       // agenda es calendario + recordatorios. Visto en 5 de los turnos
       // históricos.
       mcpTool('create_event'),
+      nativeTool('agenda_agregar'),
     ],
   },
   {

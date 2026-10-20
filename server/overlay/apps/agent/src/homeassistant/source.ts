@@ -5,6 +5,7 @@ import {
 } from '@/time/zone';
 
 import { planHomeAssistantAction, type HomeAssistantActionPlan } from '@/homeassistant/actions';
+import type { HomeShoppingList } from '@/homeassistant/shopping';
 import type {
   HomeAssistantClient,
   HomeAssistantForecastEntry,
@@ -36,6 +37,9 @@ export const HOME_ASSISTANT_LABEL_CACHE_MILLISECONDS = 60_000;
 export const HOME_ASSISTANT_CALENDAR_CACHE_MILLISECONDS = 5 * 60_000;
 export const HOME_ASSISTANT_FORECAST_CACHE_MILLISECONDS = 30 * 60_000;
 export const HOME_ASSISTANT_UNREACHABLE_BACKOFF_MILLISECONDS = 30_000;
+// Lista de compras: se edita también desde la app de HA, así que caché corta.
+// Un cambio por voz la invalida en el acto.
+export const HOME_ASSISTANT_SHOPPING_CACHE_MILLISECONDS = 30_000;
 // Tras un error de una fuente cacheada, cuánto esperar para reintentarla.
 const CACHED_SOURCE_RETRY_MILLISECONDS = 60_000;
 // La agenda mira hacia adelante: si estamos el 30, el mes no alcanza.
@@ -45,6 +49,9 @@ export type HomeAssistantDashboardData = {
   readonly calendarEventList: readonly DashboardCalendarEvent[];
   readonly weather?: HomeAssistantWeather;
   readonly tileList: readonly HomeTile[];
+  // Agenda v2: ítems sin completar de todo.shopping_list. `undefined` si la
+  // lista no existe en HA o nunca se pudo leer.
+  readonly shoppingItemList?: readonly string[];
 };
 
 export type HomeAssistantActionResult =
@@ -63,6 +70,9 @@ type CachedEntry<Value> = {
 function createCachedCell<Value>(ttlMilliseconds: number) {
   let entry: CachedEntry<Value> | undefined;
   return {
+    clear(): void {
+      entry = undefined;
+    },
     async read(input: {
       readonly key: string;
       readonly nowMilliseconds: number;
@@ -138,6 +148,16 @@ export type HomeAssistantDashboardSource = {
     readonly timezone: string;
     readonly locationLabel: string;
   }): Promise<HomeAssistantDashboardData | undefined>;
+  // Agenda v2: eventos de un rango (la vista de un día, agenda_listar), sin
+  // caché. Tira si Home Assistant no responde o fallan todos los calendarios.
+  readAgendaEventList(input: {
+    readonly timezone: string;
+    readonly startMilliseconds: number;
+    readonly endMilliseconds: number;
+  }): Promise<readonly DashboardCalendarEvent[]>;
+  // Después de agendar o borrar por voz, o de tocar la lista de compras.
+  invalidateCalendarCache(): void;
+  invalidateShoppingCache(): void;
   executeTileAction(input: {
     readonly entityId: string;
     readonly action: HomeAssistantTileAction;
@@ -148,6 +168,9 @@ export function createHomeAssistantDashboardSource(input: {
   readonly client: HomeAssistantClient;
   readonly label?: string;
   readonly now?: () => number;
+  // Agenda v2: donde escribe agenda_agregar; se suma a los calendarios leídos.
+  readonly agendaCalendarEntityId?: string;
+  readonly shoppingList?: HomeShoppingList;
 }): HomeAssistantDashboardSource {
   const { client } = input;
   const label = input.label ?? JARVIS_HOME_ASSISTANT_LABEL;
@@ -159,6 +182,7 @@ export function createHomeAssistantDashboardSource(input: {
   const forecastCell = createCachedCell<readonly HomeAssistantForecastEntry[]>(
     HOME_ASSISTANT_FORECAST_CACHE_MILLISECONDS,
   );
+  const shoppingCell = createCachedCell<readonly string[]>(HOME_ASSISTANT_SHOPPING_CACHE_MILLISECONDS);
   let unreachableUntilMilliseconds = Number.NEGATIVE_INFINITY;
   let isReachable = true;
 
@@ -190,8 +214,63 @@ export function createHomeAssistantDashboardSource(input: {
     );
   }
 
+  // Lee los eventos de varios calendarios en un rango. Un calendario roto no
+  // tapa a los demás; si fallan todos, es error.
+  async function loadCalendarEventList(inputLoad: {
+    readonly calendarEntityIdList: readonly string[];
+    readonly stateList: readonly HomeAssistantState[];
+    readonly timezone: string;
+    readonly startMilliseconds: number;
+    readonly endMilliseconds: number;
+  }): Promise<readonly DashboardCalendarEvent[]> {
+    if (inputLoad.calendarEntityIdList.length === 0) {
+      return [];
+    }
+    const resultList = await Promise.allSettled(
+      inputLoad.calendarEntityIdList.map(async (calendarEntityId) => ({
+        calendarEntityId,
+        eventList: await client.listCalendarEvents({
+          calendarEntityId,
+          startIso: new Date(inputLoad.startMilliseconds).toISOString(),
+          endIso: new Date(inputLoad.endMilliseconds).toISOString(),
+        }),
+      })),
+    );
+    const fulfilledList = resultList.flatMap((result) =>
+      result.status === 'fulfilled' ? [result.value] : [],
+    );
+    if (fulfilledList.length === 0) {
+      const firstRejection = resultList.find((result) => result.status === 'rejected');
+      throw firstRejection?.reason ?? new Error('ningún calendario respondió');
+    }
+    return fulfilledList.flatMap((result) =>
+      normalizeCalendarEventList({
+        eventList: result.eventList,
+        timezone: inputLoad.timezone,
+        calendarEntityId: result.calendarEntityId,
+        calendarState: inputLoad.stateList.find((state) => state.entity_id === result.calendarEntityId),
+      }),
+    );
+  }
+
+  async function readShoppingItemList(
+    stateList: readonly HomeAssistantState[],
+  ): Promise<readonly string[] | undefined> {
+    const { shoppingList } = input;
+    if (shoppingList === undefined || !stateList.some((state) => state.entity_id === shoppingList.entityId)) {
+      return undefined;
+    }
+    return shoppingCell.read({
+      key: shoppingList.entityId,
+      nowMilliseconds: now(),
+      load: async () => (await shoppingList.listItems()).map((item) => item.summary),
+      onError: (error) => logWarning('home_assistant_compras_fallo', error),
+    });
+  }
+
   async function readCalendarEventList(inputCalendar: {
     readonly calendarEntityIdList: readonly string[];
+    readonly stateList: readonly HomeAssistantState[];
     readonly timezone: string;
   }): Promise<readonly DashboardCalendarEvent[]> {
     if (inputCalendar.calendarEntityIdList.length === 0) {
@@ -202,30 +281,15 @@ export function createHomeAssistantDashboardSource(input: {
       (await calendarCell.read({
         key: `${range.monthKey}|${inputCalendar.timezone}|${inputCalendar.calendarEntityIdList.join(',')}`,
         nowMilliseconds: now(),
-        load: async () => {
-          const resultList = await Promise.allSettled(
-            inputCalendar.calendarEntityIdList.map((calendarEntityId) =>
-              client.listCalendarEvents({
-                calendarEntityId,
-                startIso: new Date(range.startMilliseconds).toISOString(),
-                endIso: new Date(range.endMilliseconds).toISOString(),
-              }),
-            ),
-          );
-          const fulfilledList = resultList.filter(
-            (result): result is PromiseFulfilledResult<Awaited<ReturnType<HomeAssistantClient['listCalendarEvents']>>> =>
-              result.status === 'fulfilled',
-          );
-          // Un calendario roto no tapa a los demás; si fallan todos, es error
-          // y la celda reintenta (con el valor anterior mientras tanto).
-          if (fulfilledList.length === 0) {
-            const firstRejection = resultList.find((result) => result.status === 'rejected');
-            throw firstRejection?.reason ?? new Error('ningún calendario respondió');
-          }
-          return fulfilledList.flatMap((result) =>
-            normalizeCalendarEventList({ eventList: result.value, timezone: inputCalendar.timezone }),
-          );
-        },
+        // Si fallan todos, la celda reintenta (con el valor anterior mientras tanto).
+        load: () =>
+          loadCalendarEventList({
+            calendarEntityIdList: inputCalendar.calendarEntityIdList,
+            stateList: inputCalendar.stateList,
+            timezone: inputCalendar.timezone,
+            startMilliseconds: range.startMilliseconds,
+            endMilliseconds: range.endMilliseconds,
+          }),
         onError: (error) => logWarning('home_assistant_calendario_fallo', error),
       })) ?? []
     );
@@ -277,9 +341,14 @@ export function createHomeAssistantDashboardSource(input: {
       }
       noteReachability(true);
       const labelledEntityIdList = await readLabelledEntityIdList();
-      const [calendarEventList, weather] = await Promise.all([
+      const [calendarEventList, weather, shoppingItemList] = await Promise.all([
         readCalendarEventList({
-          calendarEntityIdList: selectCalendarEntityIdList({ labelledEntityIdList, stateList }),
+          calendarEntityIdList: selectCalendarEntityIdList({
+            labelledEntityIdList,
+            stateList,
+            agendaCalendarEntityId: input.agendaCalendarEntityId,
+          }),
+          stateList,
           timezone,
         }),
         readWeather({
@@ -288,12 +357,48 @@ export function createHomeAssistantDashboardSource(input: {
           timezone,
           locationLabel,
         }),
+        readShoppingItemList(stateList),
       ]);
       return {
         calendarEventList,
         ...(weather === undefined ? {} : { weather }),
         tileList: buildHomeTileList({ labelledEntityIdList, stateList }),
+        ...(shoppingItemList === undefined ? {} : { shoppingItemList }),
       };
+    },
+
+    async readAgendaEventList({ timezone, startMilliseconds, endMilliseconds }) {
+      if (now() < unreachableUntilMilliseconds) {
+        throw new Error('Home Assistant no responde');
+      }
+      let stateList: readonly HomeAssistantState[];
+      try {
+        stateList = await client.listStates();
+      } catch (error) {
+        noteReachability(false, error);
+        throw error;
+      }
+      noteReachability(true);
+      const labelledEntityIdList = await readLabelledEntityIdList();
+      return loadCalendarEventList({
+        calendarEntityIdList: selectCalendarEntityIdList({
+          labelledEntityIdList,
+          stateList,
+          agendaCalendarEntityId: input.agendaCalendarEntityId,
+        }),
+        stateList,
+        timezone,
+        startMilliseconds,
+        endMilliseconds,
+      });
+    },
+
+    invalidateCalendarCache() {
+      calendarCell.clear();
+    },
+
+    invalidateShoppingCache() {
+      shoppingCell.clear();
     },
 
     async executeTileAction({ entityId, action }) {

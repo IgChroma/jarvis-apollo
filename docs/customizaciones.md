@@ -10,7 +10,7 @@ o a `firmware/overlay/`) y por qué se hizo así, que suele ser lo más útil.
 
 ### "¿A qué hora tengo que salir?" — `travel/departure.ts`, `tools/travel.ts`
 
-Decís "voy al dentista a las 3" o "a las 8 juego al fútbol en tal lugar" y Jarvis te avisa
+Pedís "avisame cuándo tengo que salir para el dentista de las 3" y Jarvis te avisa
 **7 minutos antes de la hora en que tenés que salir** para llegar a tiempo.
 
 - **Tráfico a la hora de salida, no el de ahora.** El MCP de Google Maps no acepta hora de
@@ -20,11 +20,14 @@ Decís "voy al dentista a las 3" o "a las 8 juego al fútbol en tal lugar" y Jar
 - **Dos fases, porque el tráfico envejece.** Si falta más de una hora, no se fija el aviso: se
   programa un recálculo para una hora antes de salir, que recién ahí programa el aviso. Mismo
   patrón en todo el proyecto: *el schedule no dispara el aviso, dispara un cálculo*.
-- **El caso implícito es el importante.** Medido con el router: "avisame cuándo tengo que
-  salir" va a la intención `viaje`, pero "voy a ir al dentista a las tres" cae en `agenda_crear`
-  (0,66) y "a las 8 juego al fútbol" también (0,82). Por eso la herramienta está en las dos
-  intenciones. *Agregar una herramienta a una intención no alcanza: hay que medir a qué
-  intención va la frase real.*
+- **Solo cuando se pide (desde el add-on 0.6.0).** Medido con el router: "avisame cuándo tengo
+  que salir" va a la intención `viaje` (0,78 a 1,0), pero "voy a ir al dentista a las tres" cae
+  en `agenda_crear` (0,66). Antes la herramienta viajaba también con `agenda_crear` para
+  ofrecer la salida en ese caso implícito; el dueño decidió lo contrario: agendar es "día y
+  hora y listo", sin preguntar cómo va a ir. Ahora `avisar_para_salir` está en `viaje` y
+  `recordatorio`, no en `agenda_crear` (ver la Agenda v2 en
+  [home-assistant-setup.md](home-assistant-setup.md)). *Agregar o sacar una herramienta de una
+  intención se decide midiendo a qué intención va la frase real.*
 - El origen es `IDLE_TRAVEL_ORIGIN` (tu dirección, en el Llavero). Interruptor:
   `DEPARTURE_ALERTS=off`.
 
@@ -195,9 +198,26 @@ de habla: lo resuelve la placa y no viaja al servidor.
   clima 0,5 °C. La placa pinta el cambio en el acto y manda `ha_action`; el tablero que el
   servidor empuja enseguida lo confirma o lo corrige. Los sensores no se tocan y lo no
   disponible sale en gris.
+- **Agenda v2** (contrato en [vistas-tablero.md](vistas-tablero.md), sección "Agenda v2"):
+  - Cada evento es **un renglón**: ícono + título + "· cuándo". El título usa el ancho real de la
+    columna y se corta con "..." solo si no entra; el "cuándo" se ve siempre entero.
+  - Los íconos son glifos de la fuente Material Symbols de la barra (salud, auto, cumple, casa,
+    viaje, escuela, reunión). Las categorías sin glifo parecido (compras, pago, trabajo, deporte,
+    comida, mascota, otro) llevan un punto de color. No se sumaron fuentes.
+  - Tocar un evento abre el **detalle**: título completo, fecha y horario, lugar, descripción,
+    origen y botón **Cerrar** (tocar afuera de la tarjeta también cierra).
+  - Tocar un **día del calendario** abre la **vista del día** (dos columnas, hasta 12 eventos
+    tocables, botón **Cancelar**) y pide `agenda_day_request`. Muestra "Cargando...", "No pude
+    traer la agenda" si no contesta en 5 s, o "Sin eventos".
+  - Con el detalle o la vista del día abiertos, **deslizar y las pestañas no hacen nada**: se
+    cierran con su botón. Si empezás a hablar se cierran solos, para que se vea la franja de
+    conversación. El recordatorio y la pantalla de confirmación siguen teniendo prioridad.
+  - La tarjeta del medio alterna **Pendientes / Compras** con las flechas ‹ › de la cabecera,
+    que solo aparecen si llegaron las dos listas. La elección dura hasta reiniciar.
 - Agenda y eventos de hoy muestran solo lo que entra entero (en la 4.3C, 800×480, entran menos
   que en la P4-7B, 1024×600). El log de arranque (`tablero armado: ...`) dice cuánto mide cada
-  cosa, cuántos eventos entran y cuántos renglones tiene la franja de conversación.
+  cosa, cuántos eventos entran y cuántos renglones tiene la franja de conversación; la línea
+  `agenda v2: ...` dice lo mismo de la vista del día y del detalle.
 - El servidor arma y **recorta** el contenido (`dashboard/payload.ts`) y lo manda **cada 10 s
   aunque no haya cambiado**: mandarlo solo al cambiar dejaba la pantalla vacía después de cada
   reinicio de la placa.

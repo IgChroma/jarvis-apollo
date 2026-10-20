@@ -99,6 +99,15 @@ function createFakeClient(input: {
     async getDailyForecast() {
       return [];
     },
+    async callServiceWithResponse() {
+      return undefined;
+    },
+    async getState() {
+      return undefined;
+    },
+    async sendWebSocketCommand() {
+      return undefined;
+    },
     async callService(call) {
       serviceCallList.push(call);
       if (input.failService === true) {

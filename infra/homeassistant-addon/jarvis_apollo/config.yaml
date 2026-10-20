@@ -5,7 +5,7 @@
 # Para publicar una versión nueva: subí los cambios del servidor a main y subí
 # acá `version`. Home Assistant ofrece "Actualizar" y reconstruye la imagen.
 name: Jarvis Apollo
-version: "0.5.0"
+version: "0.6.0"
 slug: jarvis_apollo
 description: Servidor de voz de Jarvis (Apollo en Bun) para la placa ESP32, en el puerto 8799.
 url: https://github.com/IgChroma/jarvis-apollo/tree/main/infra/homeassistant-addon/jarvis_apollo
@@ -57,6 +57,7 @@ options:
   reminder_alarm: true
   event_watches: false
   speaker_route: avisos
+  agenda_calendar: calendar.hogar
   waha_session: default
   mock_voice: false
   log_to_file: true
@@ -121,6 +122,8 @@ schema:
   speaker_url: url?
   speaker_route: list(apagado|avisos|todo)
   speaker_token: password?
+  # --- Agenda (0.6.0): calendario de Home Assistant donde agenda Jarvis por voz
+  agenda_calendar: match(^calendar\.[a-z0-9_]+$)?
   # --- Diagnóstico
   mock_voice: bool
   log_to_file: bool

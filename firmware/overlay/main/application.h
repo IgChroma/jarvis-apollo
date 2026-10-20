@@ -231,6 +231,9 @@ public:
     // Mosaico de la vista Casa -> mensaje `ha_action`. Abre el canal si hace
     // falta, como SendGesture. Seguro desde cualquier tarea.
     void SendHaAction(const std::string& entity_id, const std::string& action);
+    // Dia del calendario del mes -> `agenda_day_request` (Agenda v2). Abre el
+    // canal si hace falta. Seguro desde cualquier tarea.
+    void SendAgendaDayRequest(const std::string& date);
 
     // The confirm screen session. ShowConfirm and DismissConfirm are safe from
     // any task; the touch task polls IsConfirmActive and answers through

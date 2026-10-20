@@ -1,3 +1,7 @@
+import {
+  parseAgendaSummary,
+  type AgendaCalendarEvent,
+} from '@/dashboard/agenda';
 import type { HomeTile } from '@/protocol/schema';
 import {
   resolveCalendarDateInTimeZone,
@@ -204,20 +208,34 @@ export function buildHomeTileList(input: {
   );
 }
 
-/** Calendarios para la agenda: los etiquetados; si ninguno lo está, todos. */
+/**
+ * Calendarios para la agenda: los etiquetados; si ninguno lo está, todos. El
+ * calendario donde escribe Jarvis (agenda_agregar, `calendar.hogar` por
+ * defecto) se suma siempre que exista: lo que se agenda por voz tiene que verse
+ * en la placa aunque esté sin etiquetar.
+ */
 export function selectCalendarEntityIdList(input: {
   readonly labelledEntityIdList: readonly string[];
   readonly stateList: readonly HomeAssistantState[];
+  readonly agendaCalendarEntityId?: string;
 }): readonly string[] {
   const labelledCalendarList = input.labelledEntityIdList.filter(
     (entityId) => resolveHomeEntityKind(entityId) === 'calendar',
   );
-  if (labelledCalendarList.length > 0) {
-    return [...new Set(labelledCalendarList)];
+  const selectedList =
+    labelledCalendarList.length > 0
+      ? labelledCalendarList
+      : input.stateList
+          .map((state) => state.entity_id)
+          .filter((entityId) => resolveHomeEntityKind(entityId) === 'calendar');
+  const agendaCalendarEntityId = input.agendaCalendarEntityId;
+  if (
+    agendaCalendarEntityId !== undefined &&
+    input.stateList.some((state) => state.entity_id === agendaCalendarEntityId)
+  ) {
+    return [...new Set([...selectedList, agendaCalendarEntityId])];
   }
-  return input.stateList
-    .map((state) => state.entity_id)
-    .filter((entityId) => resolveHomeEntityKind(entityId) === 'calendar');
+  return [...new Set(selectedList)];
 }
 
 /** Clima: el primero etiquetado; si no, `weather.home` si existe. */
@@ -329,14 +347,100 @@ export function buildHomeAssistantWeather(input: {
   };
 }
 
-export type DashboardCalendarEvent = {
+// Agenda v2: con id, ícono y detalle (ver dashboard/agenda.ts).
+export type DashboardCalendarEvent = AgendaCalendarEvent;
+
+/** "calendar.hogar" → "Calendario Hogar" (con el nombre amigable si lo hay). */
+export function resolveCalendarSourceLabel(state: HomeAssistantState | undefined, calendarEntityId: string): string {
+  const name = state === undefined
+    ? calendarEntityId.split('.').slice(1).join('.').replace(/_/g, ' ').trim()
+    : resolveEntityName(state);
+  const capitalized = name.length > 0 ? name[0].toUpperCase() + name.slice(1) : calendarEntityId;
+  return /^calendario(\s|$)/i.test(capitalized) ? capitalized : `Calendario ${capitalized}`;
+}
+
+/**
+ * Id estable de un evento para la placa y para agenda_borrar:
+ * "<calendario sin 'calendar.'>:<uid>", y "#<recurrence_id>" si es una
+ * repetición (borrar sin él borraría la serie entera). Sin uid no hay id.
+ */
+export function buildCalendarEventId(input: {
+  readonly calendarEntityId: string;
+  readonly uid?: string | null;
+  readonly recurrenceId?: string | null;
+}): string | undefined {
+  const uid = input.uid?.trim();
+  if (uid === undefined || uid.length === 0) {
+    return undefined;
+  }
+  const objectId = input.calendarEntityId.split('.').slice(1).join('.');
+  const recurrenceId = input.recurrenceId?.trim();
+  return `${objectId}:${uid}${recurrenceId === undefined || recurrenceId.length === 0 ? '' : `#${recurrenceId}`}`;
+}
+
+/** Al revés: "hogar:abc#2026…" → calendar.hogar, uid y recurrence_id. */
+export function parseCalendarEventId(eventId: string): {
+  readonly calendarEntityId: string;
+  readonly uid: string;
+  readonly recurrenceId?: string;
+} | undefined {
+  const separatorIndex = eventId.indexOf(':');
+  if (separatorIndex <= 0) {
+    return undefined;
+  }
+  const calendarEntityId = `calendar.${eventId.slice(0, separatorIndex)}`;
+  const rest = eventId.slice(separatorIndex + 1);
+  const hashIndex = rest.lastIndexOf('#');
+  const uid = hashIndex >= 0 ? rest.slice(0, hashIndex) : rest;
+  const recurrenceId = hashIndex >= 0 ? rest.slice(hashIndex + 1) : undefined;
+  if (!/^calendar\.[a-z0-9_]+$/.test(calendarEntityId) || uid.length === 0) {
+    return undefined;
+  }
+  return {
+    calendarEntityId,
+    uid,
+    ...(recurrenceId === undefined || recurrenceId.length === 0 ? {} : { recurrenceId }),
+  };
+}
+
+function significantWordSet(text: string): ReadonlySet<string> {
+  return new Set(
+    text
+      .normalize('NFD')
+      .replace(/\p{M}/gu, '')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((word) => word.length >= 4),
+  );
+}
+
+/**
+ * Título largo y descripción del detalle. Los eventos que crea Jarvis
+ * (agenda_agregar) guardan el título largo en la PRIMERA línea de la
+ * descripción y lo que siga, después de una línea en blanco. Se reconoce así:
+ * resumen con emoji, primer párrafo de una sola línea corta y que comparte
+ * alguna palabra con el título corto ("Turno con la dentista…" / "Dentista").
+ * Si no encaja, la descripción va entera y el título largo es el corto.
+ */
+export function splitCalendarDescription(input: {
   readonly title: string;
-  readonly startsAtMilliseconds: number;
-  // Fin exclusivo. En los de todo el día es la medianoche local del día
-  // siguiente al último.
-  readonly endsAtMilliseconds?: number;
-  readonly isAllDay?: boolean;
-};
+  readonly hasEmoji: boolean;
+  readonly description?: string | null;
+}): { readonly fullTitle: string; readonly description?: string } {
+  const description = input.description?.replace(/\r\n?/g, '\n').trim() ?? '';
+  if (description.length === 0) {
+    return { fullTitle: input.title };
+  }
+  const [firstParagraph = '', ...restParagraphList] = description.split(/\n\s*\n/);
+  const firstLine = firstParagraph.trim();
+  const titleWordSet = significantWordSet(input.title);
+  const sharesWord = [...significantWordSet(firstLine)].some((word) => titleWordSet.has(word));
+  if (input.hasEmoji && !firstLine.includes('\n') && firstLine.length <= 100 && sharesWord) {
+    const rest = restParagraphList.join('\n\n').trim();
+    return { fullTitle: firstLine, ...(rest.length === 0 ? {} : { description: rest }) };
+  }
+  return { fullTitle: input.title, description };
+}
 
 function parseIsoDateParts(isoDate: string) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate);
@@ -380,20 +484,49 @@ function resolveEventInstant(
 export function normalizeCalendarEventList(input: {
   readonly eventList: readonly HomeAssistantCalendarEvent[];
   readonly timezone: string;
+  // Agenda v2: de qué calendario vienen (para el id y el origen del detalle).
+  readonly calendarEntityId?: string;
+  readonly calendarState?: HomeAssistantState;
 }): readonly DashboardCalendarEvent[] {
   const normalizedList: DashboardCalendarEvent[] = [];
+  const sourceLabel =
+    input.calendarEntityId === undefined
+      ? undefined
+      : resolveCalendarSourceLabel(input.calendarState, input.calendarEntityId);
   for (const event of input.eventList) {
-    const title = event.summary.trim();
+    const summary = event.summary.trim();
     const start = resolveEventInstant(event.start, input.timezone);
-    if (title.length === 0 || start === undefined) {
+    if (summary.length === 0 || start === undefined) {
       continue;
     }
     const end = resolveEventInstant(event.end, input.timezone);
+    // "🦷 Dentista" → título "Dentista" e ícono salud.
+    const parsed = parseAgendaSummary(summary);
+    const detail = splitCalendarDescription({
+      title: parsed.title,
+      hasEmoji: parsed.emoji !== undefined,
+      description: event.description,
+    });
+    const location = event.location?.trim();
+    const id =
+      input.calendarEntityId === undefined
+        ? undefined
+        : buildCalendarEventId({
+            calendarEntityId: input.calendarEntityId,
+            uid: event.uid,
+            recurrenceId: event.recurrence_id,
+          });
     normalizedList.push({
-      title,
+      title: parsed.title,
       startsAtMilliseconds: start.milliseconds,
       ...(end === undefined ? {} : { endsAtMilliseconds: end.milliseconds }),
       ...(start.isAllDay ? { isAllDay: true } : {}),
+      ...(id === undefined ? {} : { id }),
+      icon: parsed.icon,
+      fullTitle: detail.fullTitle,
+      ...(detail.description === undefined ? {} : { description: detail.description }),
+      ...(location === undefined || location.length === 0 ? {} : { location }),
+      ...(sourceLabel === undefined ? {} : { sourceLabel }),
     });
   }
   return normalizedList;

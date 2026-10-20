@@ -121,9 +121,9 @@ describe('buildDashboardPayload con Home Assistant', () => {
       ],
       reminderList: [{ text: 'Llamar al gasista', dueAtMilliseconds: NOW + 120 * 60_000 }],
     });
-    expect(payload.agendaList).toEqual([
+    expect(payload.agendaList?.map(({ title, whenLabel }) => ({ title, whenLabel }))).toEqual([
       { title: 'Dentista', whenLabel: 'en 40 minutos' },
-      { title: 'Llamar al gasista', whenLabel: 'en 2 horas' },
+      { title: 'Llamar al gasista', whenLabel: 'hoy 17:00' },
     ]);
     expect(payload.monthCalendar?.eventDayList).toEqual([18]);
   });

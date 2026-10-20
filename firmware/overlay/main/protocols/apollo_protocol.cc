@@ -117,6 +117,93 @@ std::string DisplayText(const char* text) {
     return result;
 }
 
+// Textos de la agenda. En Home Assistant los eventos se guardan con emoji en
+// el titulo ("🦷 Dentista") y ninguna fuente de la placa los tiene: se sacan
+// los caracteres de 4 bytes (emoji), el selector de variante U+FE0F y el ZWJ
+// U+200D, y los espacios que quedan al principio. El servidor ya los saca;
+// esto es por si algun titulo se le escapa.
+std::string AgendaText(const char* text) {
+    const std::string source = DisplayText(text);
+    std::string result;
+    result.reserve(source.size());
+    for (size_t index = 0; index < source.size();) {
+        const unsigned char lead = (unsigned char)source[index];
+        if (lead >= 0xF0) {
+            index += 4;
+            continue;
+        }
+        if (source.compare(index, 3, "\xEF\xB8\x8F") == 0 ||
+            source.compare(index, 3, "\xE2\x80\x8D") == 0) {
+            index += 3;
+            continue;
+        }
+        result += source[index++];
+    }
+    const size_t first = result.find_first_not_of(' ');
+    return first == std::string::npos ? std::string() : result.substr(first);
+}
+
+std::string AgendaField(const cJSON* object, const char* key) {
+    auto item = cJSON_GetObjectItem(object, key);
+    return cJSON_IsString(item) ? AgendaText(item->valuestring) : std::string();
+}
+
+// Una entrada de `agendaList` o de `agenda_day.entryList` (misma forma).
+// `title` y `whenLabel` son obligatorios; lo de Agenda v2 es opcional y una
+// entrada de un servidor viejo se dibuja igual, sin icono ni detalle.
+bool ParseAgendaEntry(const cJSON* entry, JarvisDashboardDisplay::AgendaEntry* parsed) {
+    auto title = cJSON_GetObjectItem(entry, "title");
+    auto when_label = cJSON_GetObjectItem(entry, "whenLabel");
+    if (!cJSON_IsString(title) || !cJSON_IsString(when_label)) {
+        return false;
+    }
+    parsed->title = AgendaText(title->valuestring);
+    parsed->when_label = AgendaText(when_label->valuestring);
+    auto id = cJSON_GetObjectItem(entry, "id");
+    auto icon = cJSON_GetObjectItem(entry, "icon");
+    parsed->id = cJSON_IsString(id) ? id->valuestring : "";
+    parsed->icon = cJSON_IsString(icon) ? icon->valuestring : "";
+    auto detail = cJSON_GetObjectItem(entry, "detail");
+    parsed->has_detail = cJSON_IsObject(detail);
+    if (parsed->has_detail) {
+        parsed->detail.full_title = AgendaField(detail, "fullTitle");
+        parsed->detail.date_label = AgendaField(detail, "dateLabel");
+        parsed->detail.time_label = AgendaField(detail, "timeLabel");
+        parsed->detail.location = AgendaField(detail, "location");
+        parsed->detail.description = AgendaField(detail, "description");
+        parsed->detail.source_label = AgendaField(detail, "sourceLabel");
+    }
+    return true;
+}
+
+// `pending` y `shopping` tienen la misma forma: {listName, count, itemList}.
+void ParseTodoList(const cJSON* root, const char* key,
+                   JarvisDashboardDisplay::TodoList* list) {
+    auto object = cJSON_GetObjectItem(root, key);
+    list->present = cJSON_IsObject(object);
+    if (!list->present) {
+        return;
+    }
+    auto list_name = cJSON_GetObjectItem(object, "listName");
+    auto count = cJSON_GetObjectItem(object, "count");
+    auto item_list = cJSON_GetObjectItem(object, "itemList");
+    if (cJSON_IsString(list_name)) {
+        list->list_name = DisplayText(list_name->valuestring);
+    }
+    if (cJSON_IsNumber(count)) {
+        list->has_count = true;
+        list->count = count->valueint;
+    }
+    if (cJSON_IsArray(item_list)) {
+        cJSON* item = nullptr;
+        cJSON_ArrayForEach(item, item_list) {
+            if (cJSON_IsString(item)) {
+                list->item_list.push_back(DisplayText(item->valuestring));
+            }
+        }
+    }
+}
+
 }  // namespace
 
 ApolloProtocol::ApolloProtocol() {}
@@ -276,6 +363,26 @@ void ApolloProtocol::SendHaAction(const std::string& entity_id, const char* acti
     cJSON_Delete(root);
 
     ESP_LOGI(TAG, "Home Assistant -> %s", message.c_str());
+    SendText(message);
+}
+
+// Toque en un dia del calendario del mes (Agenda v2, docs/vistas-tablero.md).
+void ApolloProtocol::SendAgendaDayRequest(const std::string& date) {
+    if (websocket_ == nullptr || !websocket_->IsConnected()) {
+        return;
+    }
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "agenda_day_request");
+    cJSON_AddStringToObject(root, "date", date.c_str());
+    cJSON_AddNumberToObject(root, "ts", NowMilliseconds());
+
+    auto serialized = cJSON_PrintUnformatted(root);
+    std::string message(serialized);
+    cJSON_free(serialized);
+    cJSON_Delete(root);
+
+    ESP_LOGI(TAG, "Agenda -> %s", message.c_str());
     SendText(message);
 }
 
@@ -499,35 +606,20 @@ void ApolloProtocol::HandleDashboard(const cJSON* root) {
     if (data.agenda_present) {
         cJSON* entry = nullptr;
         cJSON_ArrayForEach(entry, agenda_list) {
-            auto title = cJSON_GetObjectItem(entry, "title");
-            auto when_label = cJSON_GetObjectItem(entry, "whenLabel");
-            if (cJSON_IsString(title) && cJSON_IsString(when_label)) {
-                data.agenda_list.push_back(
-                    {DisplayText(title->valuestring), DisplayText(when_label->valuestring)});
+            JarvisDashboardDisplay::AgendaEntry parsed;
+            if (ParseAgendaEntry(entry, &parsed)) {
+                data.agenda_list.push_back(std::move(parsed));
             }
         }
     }
 
     // `pending` ausente significa "este emisor no sabe de pendientes", no
-    // "no hay pendientes": la tarjeta se deja como esta.
-    auto pending = cJSON_GetObjectItem(root, "pending");
-    data.pending_present = cJSON_IsObject(pending);
-    if (data.pending_present) {
-        auto count = cJSON_GetObjectItem(pending, "count");
-        auto item_list = cJSON_GetObjectItem(pending, "itemList");
-        if (cJSON_IsNumber(count)) {
-            data.has_pending = true;
-            data.pending_count = count->valueint;
-        }
-        if (cJSON_IsArray(item_list)) {
-            cJSON* item = nullptr;
-            cJSON_ArrayForEach(item, item_list) {
-                if (cJSON_IsString(item)) {
-                    data.pending_item_list.push_back(DisplayText(item->valuestring));
-                }
-            }
-        }
-    }
+    // "no hay pendientes": la tarjeta se deja como esta. `shopping` (lista de
+    // compras de Home Assistant, Agenda v2) tiene la misma forma; con
+    // `pending` presente, que falte quiere decir que no hay (ver
+    // SetDashboardData).
+    ParseTodoList(root, "pending", &data.pending);
+    ParseTodoList(root, "shopping", &data.shopping);
 
     auto travel = cJSON_GetObjectItem(root, "travel");
     data.travel_present = cJSON_IsObject(travel);
@@ -651,13 +743,48 @@ void ApolloProtocol::HandleDashboard(const cJSON* root) {
         }
     }
 
-    ESP_LOGI(TAG, "dashboard: clima=%d agenda=%d(%d) pend=%d(%d de %d) viaje=%d mes=%d casa=%d(%d)",
+    ESP_LOGI(TAG,
+             "dashboard: clima=%d agenda=%d(%d) pend=%d(%d de %d) compras=%d(%d de %d) viaje=%d "
+             "mes=%d casa=%d(%d)",
              (int)data.weather_present, (int)data.agenda_present,
-             (int)data.agenda_list.size(), (int)data.pending_present,
-             (int)data.pending_item_list.size(), data.pending_count,
-             (int)data.travel_present, (int)data.month_calendar_present,
+             (int)data.agenda_list.size(), (int)data.pending.present,
+             (int)data.pending.item_list.size(), data.pending.count,
+             (int)data.shopping.present, (int)data.shopping.item_list.size(),
+             data.shopping.count, (int)data.travel_present, (int)data.month_calendar_present,
              (int)data.home_present, (int)data.home_tile_list.size());
     dashboard->SetDashboardData(data);
+}
+
+// Respuesta a `agenda_day_request` (Agenda v2): la agenda de un dia para la
+// vista que abrio el toque en el calendario. El display descarta la de un dia
+// que ya no se esta mirando.
+void ApolloProtocol::HandleAgendaDay(const cJSON* root) {
+    auto dashboard = dynamic_cast<JarvisDashboardDisplay*>(Board::GetInstance().GetDisplay());
+    if (dashboard == nullptr) {
+        ESP_LOGW(TAG, "agenda_day: el display no es JarvisDashboardDisplay, se ignora");
+        return;
+    }
+    auto date = cJSON_GetObjectItem(root, "date");
+    if (!cJSON_IsString(date)) {
+        ESP_LOGW(TAG, "agenda_day sin fecha, se ignora");
+        return;
+    }
+    auto date_label = cJSON_GetObjectItem(root, "dateLabel");
+    std::vector<JarvisDashboardDisplay::AgendaEntry> entry_list;
+    auto list = cJSON_GetObjectItem(root, "entryList");
+    if (cJSON_IsArray(list)) {
+        cJSON* entry = nullptr;
+        cJSON_ArrayForEach(entry, list) {
+            JarvisDashboardDisplay::AgendaEntry parsed;
+            if (ParseAgendaEntry(entry, &parsed)) {
+                entry_list.push_back(std::move(parsed));
+            }
+        }
+    }
+    ESP_LOGI(TAG, "agenda_day %s: %d eventos", date->valuestring, (int)entry_list.size());
+    dashboard->SetAgendaDay(date->valuestring,
+                            cJSON_IsString(date_label) ? AgendaText(date_label->valuestring) : "",
+                            entry_list);
 }
 
 void ApolloProtocol::HandleUiState(const cJSON* root) {
@@ -803,6 +930,8 @@ void ApolloProtocol::HandleIncomingJson(const char* data, size_t len) {
         HandleUiState(root);
     } else if (strcmp(type->valuestring, "dashboard") == 0) {
         HandleDashboard(root);
+    } else if (strcmp(type->valuestring, "agenda_day") == 0) {
+        HandleAgendaDay(root);
     } else if (strcmp(type->valuestring, "tts_start") == 0) {
         HandleTtsStart(root);
     } else if (strcmp(type->valuestring, "tts_end") == 0) {

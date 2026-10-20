@@ -48,6 +48,9 @@ public:
     // Mosaico de la vista Casa: action es "toggle", "climate_up" o
     // "climate_down".
     void SendHaAction(const std::string& entity_id, const char* action);
+    // Agenda v2: pide los eventos de un dia ("2026-10-23"); la respuesta es
+    // `agenda_day`.
+    void SendAgendaDayRequest(const std::string& date);
 
 private:
     std::unique_ptr<WebSocket> websocket_;
@@ -75,6 +78,7 @@ private:
     void HandleIncomingJson(const char* data, size_t len);
     void HandleUiState(const cJSON* root);
     void HandleDashboard(const cJSON* root);
+    void HandleAgendaDay(const cJSON* root);
     void HandleReminder(const char* message);
     void HandleTtsStart(const cJSON* root);
     void HandleTimer(const cJSON* root);

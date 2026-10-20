@@ -99,6 +99,60 @@ El router tiene una intención `casa` para estas frases, y las mismas herramient
 `dispositivo` (donde caían antes) y `casa_estado` con `clima` ("¿qué temperatura hay en el
 cuarto?"). Los esquemas son chicos a propósito: las tres juntas suman ~1,4 KB (una MCP típica pesa más que eso sola).
 
+### Agenda y lista de compras (add-on 0.6.0)
+
+El contrato con la placa está en [vistas-tablero.md](vistas-tablero.md#agenda-v2-add-on-060-eventos-tocables-agenda-por-día-y-lista-de-compras).
+
+**Agendar por voz.** "Anotame en la agenda el jueves a las 11 el dentista" alcanza: Jarvis
+guarda el evento y confirma en una frase ("Listo, el jueves 23 a las 11 en tu agenda"). El
+lugar es un extra. **No** pregunta cómo vas a ir, **no** ofrece calcular la hora de salida y
+**no** crea un recordatorio aparte: si querés el aviso, pedilo ("avisame cuándo salir").
+
+- **Dónde:** en `calendar.hogar`. Se cambia con la opción **`agenda_calendar`** del add-on
+  (variable `AGENDA_CALENDAR_ENTITY` fuera del add-on). Ese calendario se muestra en la placa
+  aunque no tenga la etiqueta `jarvis`.
+- **Cómo queda en Home Assistant:** el título es `"<emoji> <título corto>"` ("🦷 Dentista",
+  hasta 18 caracteres) y la descripción lleva el título largo en la primera línea y, si
+  dijiste algo más, eso después de una línea en blanco. Duración: 1 h salvo que digas otra.
+  La hora se interpreta en la zona del clima (Buenos Aires por defecto) y viaja con su desfase
+  (`2026-10-22T11:00:00-03:00`).
+- **Íconos en la placa:** la placa no dibuja emoji. El emoji del principio del título se
+  traduce a una categoría (`salud`, `auto`, `cumple`, `compras`, `casa`, `pago`, `viaje`,
+  `trabajo`, `escuela`, `deporte`, `comida`, `mascota`, `reunion`, `otro`), también en los
+  eventos que cargues a mano en Home Assistant ("🎂 Cumple Nico" sale con el ícono de cumple).
+  Sin emoji, o con uno que no está en la tabla, es `otro`. Si el modelo elige un emoji que la
+  tabla no conoce, Jarvis guarda el canónico de la categoría que eligió (🩺 para `salud`).
+
+| Herramienta | Qué hace |
+|---|---|
+| `agenda_agregar` | `calendar.create_event`. Obligatorios: `fecha` (AAAA-MM-DD) y `hora` (HH:MM) o `todo_el_dia`, más `titulo_corto`, `emoji` e `icono`, que arma el modelo. Opcionales: `titulo_largo`, `lugar`, `duracion_minutos` (60), `descripcion`. Una fecha que ya pasó (más de 1 h) se rechaza: suele ser un error de año o de día |
+| `agenda_listar` | Eventos de `desde` a `hasta` (hasta 31 días) de los calendarios del tablero: `id \| día hora \| título @ lugar` |
+| `agenda_borrar` | Borra por `id` con el comando WebSocket `calendar/event/delete` (no hay servicio REST). Solo en calendarios que dejan borrar (bit 2 de `supported_features`: los locales sí, los de feriados no) |
+
+- **Ids:** `<calendario sin "calendar.">:<uid>` ("hogar:01JB…"); en una repetición se agrega
+  `#<recurrence_id>`, para borrar esa sola y no la serie.
+- **WebSocket:** `ws://supervisor/core/websocket` dentro del add-on y `HA_URL` con
+  `ws(s)://…/api/websocket` afuera, con el mismo token. Una conexión por comando.
+- Sin Home Assistant estas herramientas no existen y la intención `agenda_crear` sigue con
+  Google Calendar por MCP para quien lo tenga. `avisar_para_salir` ya no viaja con
+  `agenda_crear`: queda en `viaje` y `recordatorio`.
+
+**Lista de compras.** Hay dos listas: **Pendientes** (la interna de Jarvis, con el espejo de
+Notion si está) y **Compras**, que con Home Assistant es `todo.shopping_list` (la de la app de
+HA). `read_list`, `add_to_list` y `remove_from_list` deciden por el nombre: "compras", "lista
+de compras", "súper" (y la de por defecto, sin nombre) van a Home Assistant; "pendientes" y
+cualquier otra, a la interna.
+
+- Leer: `todo.get_items` con `status: needs_action` (lo tachado no cuenta).
+- Agregar: `todo.add_item`. Sacar: `todo.remove_item` por `uid` de los ítems que contienen el
+  texto (sin tildes ni mayúsculas); `clearAll` saca todos los pendientes de comprar. Si la lista
+  no dejara borrar pero sí editar, se marca completada con `todo.update_item`.
+- En la placa, la tarjeta del centro alterna **Pendientes · Compras**; Compras se relee cada
+  30 s y enseguida después de un cambio por voz.
+- Si Home Assistant no responde, el error vuelve como respuesta ("no pude usar la lista de
+  compras…") y la lista interna sigue andando. Lo que tenías en la lista interna "super"
+  antes de 0.6.0 queda ahí (se ve con "leeme pendientes" o sin nombre): pasalo a mano.
+
 ---
 
 ## 3. Claude con tope de gasto

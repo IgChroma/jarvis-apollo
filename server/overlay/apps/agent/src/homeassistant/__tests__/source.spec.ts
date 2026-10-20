@@ -41,6 +41,15 @@ function createFakeClient(input: {
       callLog.push('forecast');
       return [{ datetime: '2026-10-18T15:00:00+00:00', temperature: 25, templow: 11 }];
     },
+    async callServiceWithResponse() {
+      return undefined;
+    },
+    async getState() {
+      return undefined;
+    },
+    async sendWebSocketCommand() {
+      return undefined;
+    },
     async callService(serviceCall) {
       serviceCallList.push(serviceCall);
     },
@@ -83,7 +92,13 @@ describe('createHomeAssistantDashboardSource', () => {
     const data = await source.readDashboardData({ timezone: TIMEZONE, locationLabel: 'Casa' });
     expect(data?.tileList.map((tile) => tile.entityId)).toEqual(['light.living', 'climate.dormitorio']);
     expect(data?.calendarEventList).toEqual([
-      { title: 'Dentista', startsAtMilliseconds: Date.UTC(2026, 9, 18, 21, 30) },
+      {
+        title: 'Dentista',
+        startsAtMilliseconds: Date.UTC(2026, 9, 18, 21, 30),
+        icon: 'otro',
+        fullTitle: 'Dentista',
+        sourceLabel: 'Calendario Casa',
+      },
     ]);
     expect(data?.weather).toMatchObject({ temperatureC: 20, minC: 11, maxC: 25, conditionCode: 'sunny' });
   });

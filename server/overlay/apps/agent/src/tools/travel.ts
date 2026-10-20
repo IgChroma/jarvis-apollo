@@ -11,11 +11,13 @@ const departureAlertArgsSchema = z.object({
   direccion: z.string().min(1).max(200).optional(),
 });
 
+// Desde la Agenda v2 (2026-10-19) solo a pedido: el dueño no quiere que agendar
+// "el dentista el jueves a las 11" dispare la pregunta de cómo va a ir.
 export const departureAlertTool: ToolDefinition = {
   name: 'avisar_para_salir',
   safety: 'safe',
   description:
-    'Avisa cuándo hay que salir para llegar a horario a un lugar, calculando el viaje con tráfico. Usar cuando el usuario dice que va a ir a algún lado a una hora.',
+    'Avisa cuándo hay que salir para llegar a horario a un lugar, calculando el viaje con tráfico. Solo si el usuario pide que le avisen cuándo salir: agendar algo no alcanza.',
   parameters: {
     type: 'object',
     properties: {

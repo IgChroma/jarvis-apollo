@@ -97,7 +97,7 @@ export function looksLikeUnbackedClaim(input: {
 
 export const UNBACKED_CLAIM_NUDGE =
   'Atención: le confirmaste al usuario algo que no hiciste (ninguna herramienta, o un aviso de una sola vez cuando prometiste que se repite). ' +
-  'Llamá ahora a la herramienta que corresponde (set_reminder para una vez, set_recurring_reminder si se repite, casa_controlar para la casa). ' +
+  'Llamá ahora a la herramienta que corresponde (set_reminder para una vez, set_recurring_reminder si se repite, agenda_agregar para la agenda, casa_controlar para la casa). ' +
   'Si en realidad te falta un dato, no confirmes: preguntalo.';
 
 export const UNBACKED_DATA_NUDGE =

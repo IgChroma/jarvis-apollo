@@ -19,7 +19,7 @@ const apolloOperatingBasePrompt =
   'Usá web_search para hechos rápidos; start_research para investigación profunda multi-fuente; recall_memory para buscar en memoria; translate para traducir. ' +
   'También remember_fact, set_focus, clear_focus, set_reminder, list_reminders, cancel_reminder, weather_now y set_weather_location cuando ayuden. ' +
   'set_timer para cuentas regresivas y start_pomodoro para pomodoros con focus. ' +
-  'add_to_list, read_list y remove_from_list para listas (la del super por defecto). ' +
+  'add_to_list, read_list y remove_from_list para listas (la de compras/súper por defecto; "pendientes" es otra). ' +
   'dollar_rate para cotizaciones del dólar. send_email para mandarle algo por mail al usuario; send_whatsapp para mandárselo por WhatsApp al celular. ' +
   'start_coding_task para tareas de código en GitHub: pasale el nombre del repo tal como lo dijo el usuario, nunca pidas URLs ni owner/repo; list_coding_repositories te dice en cuáles se puede. ' +
   'Para guardar la ciudad default del clima usá set_weather_location. Si solo preguntan el clima en otra ciudad, weather_now con locationQuery (no guarda). ' +
@@ -58,6 +58,24 @@ export function buildHomeControlPromptNote(toolNameList: readonly string[]): str
   );
 }
 
+// Agenda v2 (docs/vistas-tablero.md): solo si el host tiene Home Assistant
+// (tools/agenda.ts registra agenda_*). El dueño pidió explícitamente que
+// agendar sea "día y hora y listo": nada de preguntar cómo va a ir, ofrecer la
+// hora de salida ni dejar un recordatorio aparte.
+export function buildAgendaPromptNote(toolNameList: readonly string[]): string {
+  if (!toolNameList.includes('agenda_agregar')) {
+    return '';
+  }
+  return (
+    '\nAgenda: para agendar usá agenda_agregar (el calendario de la casa), no create-event.' +
+    ' Con día y hora alcanza; el lugar es opcional. Si falta la hora, preguntá solo la hora.' +
+    ' NUNCA preguntes cómo va a ir ni ofrezcas calcular la salida, y no crees recordatorios aparte.' +
+    ' Armá titulo_corto (máx. 18), un emoji y su icono. Confirmá en una frase: "Listo, el jueves 23 a las 11 en tu agenda".' +
+    ' Para ver la agenda: agenda_listar y list_reminders. Para borrar: agenda_listar y agenda_borrar con el id.' +
+    '\nListas: compras/súper es la lista de compras de la casa; pendientes es otra. Pasá listName.'
+  );
+}
+
 // Sin esto, "sacá tal cosa de pendientes" se iba por el MCP de Notion: buscaba
 // la página y trataba de tildar "Hecho" con API-update-page-markdown, que edita
 // el CONTENIDO y no las propiedades. Notion devolvia 400 "No matches found" y
@@ -69,8 +87,10 @@ function buildListUsageNote(installedToolNameList: readonly string[]): string {
     return '';
   }
   return (
-    '\nListas: las listas son TUYAS y viven en vos. "Pendientes", "la lista", "el súper"' +
-    ' y lo que se ve en pantalla son todos lo mismo: usá add_to_list, read_list y' +
+    // Agenda v2: "el súper" ya no es lo mismo que pendientes: con Home
+    // Assistant es la lista de compras de la casa (tools/list.ts decide).
+    '\nListas: las listas son TUYAS. "Pendientes", "compras", "el súper"' +
+    ' y lo que se ve en pantalla: usá add_to_list, read_list y' +
     ' remove_from_list, y nada más.' +
     ' La base "Jarvis · Listas" de Notion es un ESPEJO que se sincroniza solo:' +
     ' NUNCA agregues, saques ni tildes ítems de lista pasando por las tools de Notion.' +

@@ -54,6 +54,7 @@ const TEXT_OPTIONS = {
   speaker_url: 'SPEAKER_URL',
   speaker_route: 'SPEAKER_ROUTE',
   speaker_token: 'SPEAKER_TOKEN',
+  agenda_calendar: 'AGENDA_CALENDAR_ENTITY',
 };
 
 // Interruptores: true/false de la UI → on/off, como en server/config.env.

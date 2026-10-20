@@ -1,6 +1,21 @@
-import { formatTimeUntil } from '@/idle/rotator';
 import type { HomeTile, ServerToDeviceMessage } from '@/protocol/schema';
 import { resolveCalendarDateInTimeZone } from '@/time/zone';
+
+import {
+  AGENDA_DASHBOARD_MAX_ENTRY_COUNT,
+  AGENDA_TITLE_MAX_CHARACTER_COUNT,
+  DEFAULT_AGENDA_TIMEZONE,
+  buildUpcomingAgendaEntryList,
+  formatLocalTime,
+  isSameLocalDate,
+  listEventLocalDates,
+  listReminderDaysInMonth,
+  type AgendaCalendarEvent,
+  type AgendaReminder,
+} from '@/dashboard/agenda';
+import { clipDashboardText, clipDashboardTextWithin } from '@/dashboard/text';
+
+export { clipDashboardText, clipDashboardTextWithin } from '@/dashboard/text';
 
 // Armado del tablero que se le manda a la placa.
 //
@@ -19,14 +34,16 @@ import { resolveCalendarDateInTimeZone } from '@/time/zone';
 // ajustar un número en TypeScript es gratis y en C cuesta un reflasheo.
 
 // Límites que impone la pantalla de 800x480 con el reparto de la opción A.
-export const DASHBOARD_AGENDA_MAX_ENTRY_COUNT = 2;
+// Agenda v2: hasta 6 entradas y título de hasta 40 (la placa pone el "…" según
+// el ancho real de la columna).
+export const DASHBOARD_AGENDA_MAX_ENTRY_COUNT = AGENDA_DASHBOARD_MAX_ENTRY_COUNT;
 export const DASHBOARD_PENDING_MAX_ITEM_COUNT = 4;
 // Medido en la placa: 34 caracteres no entraban en los 288px de la columna y
 // LVGL los recortaba con puntos, que se lee peor que un corte por palabra hecho
 // acá. Los ítems son notas libres y pueden ser larguísimos: en una tarjeta que
 // se mira de reojo importa reconocer cuál es, no leerlo entero.
 export const DASHBOARD_PENDING_MAX_CHARACTER_COUNT = 24;
-export const DASHBOARD_AGENDA_MAX_CHARACTER_COUNT = 22;
+export const DASHBOARD_AGENDA_MAX_CHARACTER_COUNT = AGENDA_TITLE_MAX_CHARACTER_COUNT;
 
 // Vistas Inicio/Casa (docs/vistas-tablero.md). Estos largos son TOTALES, con
 // el "…" incluido: la placa los dibuja en cajas fijas y el contrato dice
@@ -45,6 +62,7 @@ const ALL_DAY_TIME_LABEL = 'Todo el día';
 export type DashboardPayload = Extract<ServerToDeviceMessage, { type: 'dashboard' }>;
 export type DashboardAgendaEntry = NonNullable<DashboardPayload['agendaList']>[number];
 export type DashboardPendingTile = NonNullable<DashboardPayload['pending']>;
+export type DashboardShoppingTile = NonNullable<DashboardPayload['shopping']>;
 export type DashboardTravelTile = NonNullable<DashboardPayload['travel']>;
 export type DashboardWeather = NonNullable<DashboardPayload['weather']>;
 export type DashboardMonthCalendar = NonNullable<DashboardPayload['monthCalendar']>;
@@ -64,13 +82,8 @@ export type DashboardSourceData = {
   // Los eventos (de Home Assistant) además marcan los días del calendario del
   // mes; los recordatorios no, porque los timers y los avisos recurrentes
   // llenarían el mes de puntos que no son "eventos".
-  readonly calendarEventList?: readonly {
-    readonly title: string;
-    readonly startsAtMilliseconds: number;
-    // Fin exclusivo; sin fin, el evento ocupa solo su día de inicio.
-    readonly endsAtMilliseconds?: number;
-    readonly isAllDay?: boolean;
-  }[];
+  // Agenda v2: con id, ícono y detalle (dashboard/agenda.ts).
+  readonly calendarEventList?: readonly AgendaCalendarEvent[];
   // Mosaicos de la vista Casa ya traducidos desde HA, sin recortar.
   // `undefined` = no hay Home Assistant configurado o no respondió.
   readonly homeTileList?: readonly HomeTile[];
@@ -79,46 +92,25 @@ export type DashboardSourceData = {
     readonly sell: number;
     readonly updatedAtMilliseconds: number;
   };
-  readonly reminderList?: readonly {
-    readonly text: string;
-    readonly dueAtMilliseconds: number;
-  }[];
-  readonly pending?: {
-    readonly listName: string;
-    readonly count: number;
-    readonly itemList: readonly string[];
-  };
+  readonly reminderList?: readonly AgendaReminder[];
+  // Lista interna de pendientes de Jarvis.
+  readonly pending?: DashboardSourceList;
+  // Agenda v2: la lista de compras de Home Assistant (todo.shopping_list).
+  // `undefined` = sin HA o sin la lista; vacía también se manda.
+  readonly shopping?: DashboardSourceList;
   readonly travel?: { readonly destinationLabel: string; readonly minutes: number };
   readonly nowMilliseconds: number;
+};
+
+export type DashboardSourceList = {
+  readonly listName: string;
+  readonly count: number;
+  readonly itemList: readonly string[];
 };
 
 // "Sin datos" es lo que devuelve el clima cuando el proveedor falla: dejar la
 // tarjeta afuera se lee mejor que mostrarla vacía.
 const UNAVAILABLE_CONDITION_LABEL = 'Sin datos';
-
-export function clipDashboardText(text: string, maximumCharacterCount: number): string {
-  const collapsed = text.replace(/\s+/g, ' ').trim();
-  if (collapsed.length <= maximumCharacterCount) {
-    return collapsed;
-  }
-  const clipped = collapsed.slice(0, maximumCharacterCount);
-  const lastSpaceIndex = clipped.lastIndexOf(' ');
-  // Un corte muy al principio deja una palabra sola y se entiende menos que
-  // cortar al medio de la última.
-  const trimmed = lastSpaceIndex > maximumCharacterCount / 2
-    ? clipped.slice(0, lastSpaceIndex)
-    : clipped;
-  return `${trimmed}…`;
-}
-
-/** Como `clipDashboardText`, pero el resultado (con "…") nunca pasa del máximo. */
-export function clipDashboardTextWithin(text: string, maximumCharacterCount: number): string {
-  const collapsed = text.replace(/\s+/g, ' ').trim();
-  if (collapsed.length <= maximumCharacterCount) {
-    return collapsed;
-  }
-  return clipDashboardText(collapsed, Math.max(1, maximumCharacterCount - 1));
-}
 
 /** "hace 12 min": cuánto hace que se actualizó un dato que se cachea. */
 export function formatTimeAgo(atMilliseconds: number, nowMilliseconds: number): string {
@@ -137,69 +129,12 @@ export function formatTimeAgo(atMilliseconds: number, nowMilliseconds: number): 
   return elapsedDays === 1 ? 'hace 1 día' : `hace ${elapsedDays} días`;
 }
 
-type LocalDate = { readonly year: number; readonly month: number; readonly day: number };
-
-function isSameLocalDate(left: LocalDate, right: LocalDate): boolean {
-  return left.year === right.year && left.month === right.month && left.day === right.day;
-}
-
-// Aritmética de días sobre la fecha de calendario (sin horas): UTC sirve de
-// "calendario puro" porque no tiene cambios de hora.
-function addDays(date: LocalDate, dayCount: number): LocalDate {
-  const shifted = new Date(Date.UTC(date.year, date.month - 1, date.day + dayCount));
-  return {
-    year: shifted.getUTCFullYear(),
-    month: shifted.getUTCMonth() + 1,
-    day: shifted.getUTCDate(),
-  };
-}
-
-function compareLocalDate(left: LocalDate, right: LocalDate): number {
-  return left.year - right.year || left.month - right.month || left.day - right.day;
-}
-
-// "18:30" en la zona de la placa. Con opciones explícitas y h23: el ICU del
-// contenedor no tiene el AM/PM de es-AR (ver time/zone.ts).
-function formatLocalTime(timezone: string, atMilliseconds: number): string {
-  const partList = new Intl.DateTimeFormat('en-GB', {
-    timeZone: timezone,
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(new Date(atMilliseconds));
-  const readPart = (type: string) => partList.find((part) => part.type === type)?.value ?? '00';
-  return `${readPart('hour')}:${readPart('minute')}`;
-}
-
-// Días locales que ocupa un evento, de su inicio a su fin exclusivo. Con tope,
-// por si un evento de varios meses llega con un fin absurdo.
-const MAXIMUM_EVENT_SPAN_DAY_COUNT = 62;
-
-function listEventLocalDates(
-  event: NonNullable<DashboardSourceData['calendarEventList']>[number],
-  timezone: string,
-): readonly LocalDate[] {
-  const firstDate = resolveCalendarDateInTimeZone(timezone, event.startsAtMilliseconds);
-  const endsAt = event.endsAtMilliseconds;
-  const lastDate =
-    endsAt !== undefined && Number.isFinite(endsAt) && endsAt > event.startsAtMilliseconds
-      ? resolveCalendarDateInTimeZone(timezone, endsAt - 1)
-      : firstDate;
-  const dateList: LocalDate[] = [];
-  for (
-    let date: LocalDate = firstDate;
-    compareLocalDate(date, lastDate) <= 0 && dateList.length < MAXIMUM_EVENT_SPAN_DAY_COUNT;
-    date = addDays(date, 1)
-  ) {
-    dateList.push(date);
-  }
-  return dateList;
-}
-
 export function buildMonthCalendar(input: {
   readonly timezone: string;
   readonly nowMilliseconds: number;
   readonly calendarEventList: NonNullable<DashboardSourceData['calendarEventList']>;
+  // Agenda v2: los días con recordatorios de Jarvis también se marcan.
+  readonly reminderList?: readonly AgendaReminder[];
 }): DashboardMonthCalendar {
   const today = resolveCalendarDateInTimeZone(input.timezone, input.nowMilliseconds);
   // getUTCDay da 0 = domingo; la grilla arranca el lunes (0 = lunes).
@@ -230,6 +165,14 @@ export function buildMonthCalendar(input: {
     } else {
       todayTimedList.push({ atMilliseconds: event.startsAtMilliseconds, title: event.title });
     }
+  }
+
+  for (const day of listReminderDaysInMonth({
+    reminderList: input.reminderList ?? [],
+    timezone: input.timezone,
+    month: today,
+  })) {
+    eventDaySet.add(day);
   }
 
   // Primero lo que tiene hora, en orden; después los de todo el día.
@@ -299,6 +242,17 @@ export function buildHomeCard(input: {
   return home;
 }
 
+function buildListCard(list: DashboardSourceList): DashboardPendingTile {
+  return {
+    listName: list.listName,
+    count: list.count,
+    itemList: list.itemList
+      .slice(0, DASHBOARD_PENDING_MAX_ITEM_COUNT)
+      .map((item) => clipDashboardText(item, DASHBOARD_PENDING_MAX_CHARACTER_COUNT))
+      .filter((item) => item.length > 0),
+  };
+}
+
 export function buildDashboardPayload(input: DashboardSourceData): DashboardPayload {
   const payload: DashboardPayload = { type: 'dashboard', agendaList: [] };
 
@@ -315,37 +269,24 @@ export function buildDashboardPayload(input: DashboardSourceData): DashboardPayl
     payload.weather = input.weather;
   }
 
-  const upcomingList = [
-    ...(input.calendarEventList ?? []).map((event) => ({
-      title: event.title,
-      atMilliseconds: event.startsAtMilliseconds,
-    })),
-    ...(input.reminderList ?? []).map((reminder) => ({
-      title: reminder.text,
-      atMilliseconds: reminder.dueAtMilliseconds,
-    })),
-  ]
-    .filter((entry) => Number.isFinite(entry.atMilliseconds))
-    // Lo que ya pasó no es agenda. El recordatorio que suena justo ahora lo
-    // anuncia la voz, no hace falta que además ocupe la tarjeta.
-    .filter((entry) => entry.atMilliseconds > input.nowMilliseconds)
-    .sort((left, right) => left.atMilliseconds - right.atMilliseconds)
-    .slice(0, DASHBOARD_AGENDA_MAX_ENTRY_COUNT);
-
-  payload.agendaList = upcomingList.map((entry) => ({
-    title: clipDashboardText(entry.title, DASHBOARD_AGENDA_MAX_CHARACTER_COUNT),
-    whenLabel: formatTimeUntil(entry.atMilliseconds, input.nowMilliseconds),
-  }));
+  // Agenda v2: cada entrada con id, ícono y detalle para el modal. Sin zona
+  // (no se pudo resolver la ubicación) se usa la de Buenos Aires: las
+  // etiquetas "hoy 11:00" necesitan una.
+  payload.agendaList = buildUpcomingAgendaEntryList({
+    calendarEventList: input.calendarEventList ?? [],
+    reminderList: input.reminderList ?? [],
+    timezone: input.timezone ?? DEFAULT_AGENDA_TIMEZONE,
+    nowMilliseconds: input.nowMilliseconds,
+    maximumEntryCount: DASHBOARD_AGENDA_MAX_ENTRY_COUNT,
+  });
 
   if (input.pending !== undefined && input.pending.count > 0) {
-    payload.pending = {
-      listName: input.pending.listName,
-      count: input.pending.count,
-      itemList: input.pending.itemList
-        .slice(0, DASHBOARD_PENDING_MAX_ITEM_COUNT)
-        .map((item) => clipDashboardText(item, DASHBOARD_PENDING_MAX_CHARACTER_COUNT))
-        .filter((item) => item.length > 0),
-    };
+    payload.pending = buildListCard(input.pending);
+  }
+
+  // Compras sale aunque esté vacía: la placa ofrece la pestaña solo si vino.
+  if (input.shopping !== undefined) {
+    payload.shopping = buildListCard(input.shopping);
   }
 
   if (input.travel !== undefined) {
@@ -362,6 +303,7 @@ export function buildDashboardPayload(input: DashboardSourceData): DashboardPayl
       timezone: input.timezone,
       nowMilliseconds: input.nowMilliseconds,
       calendarEventList: input.calendarEventList ?? [],
+      reminderList: input.reminderList ?? [],
     });
   }
 

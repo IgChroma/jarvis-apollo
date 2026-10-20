@@ -6,6 +6,8 @@
 #include "application.h"
 #include "assets/lang_config.h"
 
+#include <material_symbols.h>
+
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -31,6 +33,11 @@
 // del tema al cambiarla, y un label que la apuntaba queda colgando. Esta vive
 // en flash, es `const` y nadie la libera nunca: no tiene ese problema.
 LV_FONT_DECLARE(font_noto_sans_basic_30_4);
+// La fuente de iconos de la barra (Material Symbols 16 px en las dos placas,
+// la misma que eligen CMake y LcdDisplay). Tambien vive en flash y nadie la
+// libera: es la segunda excepcion a "heredar siempre", por el mismo motivo
+// que BigFont. No suma flash, ya esta linkeada por la barra de estado.
+LV_FONT_DECLARE(BUILTIN_ICON_FONT);
 
 namespace {
 
@@ -251,6 +258,121 @@ uint32_t WeatherColorFor(const std::string& condition_code) {
     return kColorInk;
 }
 
+// ---- Agenda v2 -------------------------------------------------------------
+
+// Renglon de agenda: un solo renglon (icono, titulo, "· cuando") con aire
+// arriba y abajo para que sea un blanco de dedo, y una raya fina abajo.
+constexpr int kAgendaRowPadVer = 5;
+constexpr int kAgendaRowGap = 6;
+constexpr int kAgendaIconWidth = 18;
+constexpr int kAgendaDotSize = 9;
+// Botones Cerrar / Cancelar y cuanto mas alla del borde se acepta el dedo.
+constexpr int kOverlayButtonHitMargin = 10;
+// Flechas de la tarjeta Pendientes/Compras: el glifo mide 16 px; con este
+// margen el blanco es de unos 40 px.
+constexpr int kListArrowHitMargin = 12;
+constexpr int64_t kDayRequestTimeoutMicroseconds = 5 * 1000 * 1000;
+// Renglones que se le permiten al titulo y la descripcion en el detalle.
+constexpr int kEventTitleMaxLines = 2;
+constexpr int kEventDescriptionMaxLines = 4;
+constexpr int kEventLocationMaxLines = 2;
+
+constexpr uint32_t kColorRose = 0xF87171;
+constexpr uint32_t kColorLime = 0x84CC16;
+constexpr uint32_t kColorPink = 0xF472B6;
+
+// Lista cerrada de categorias del contrato. Las fuentes no tienen emoji: cada
+// una va a un glifo que EXISTE en font_material_symbols_16_4 (verificado
+// contra su lista de codepoints) o, si no hay ninguno que se parezca, a una
+// marca de color. Una categoria desconocida o ausente cae en "otro".
+struct AgendaCategory {
+    const char* name;
+    const char* glyph;  // nullptr = marca de color
+    uint32_t color;
+    const char* heading;  // encabezado del detalle, ya en mayusculas
+};
+const AgendaCategory kAgendaCategoryList[] = {
+    {"salud", MATERIAL_SYMBOLS_FAVORITE, kColorRose, "SALUD"},
+    {"auto", MATERIAL_SYMBOLS_NAVIGATION, kColorSky, "AUTO"},
+    {"cumple", MATERIAL_SYMBOLS_STAR, kColorAmber, "CUMPLEAÑOS"},
+    {"compras", nullptr, kColorViolet, "COMPRAS"},
+    {"casa", MATERIAL_SYMBOLS_HOME, kColorTurquoise, "CASA"},
+    {"pago", nullptr, kColorGreen, "PAGO"},
+    {"viaje", MATERIAL_SYMBOLS_LANGUAGE, kColorGreen, "VIAJE"},
+    {"trabajo", nullptr, kColorSky, "TRABAJO"},
+    {"escuela", MATERIAL_SYMBOLS_EDIT_SQUARE, kColorAmber, "ESCUELA"},
+    {"deporte", nullptr, kColorLime, "DEPORTE"},
+    {"comida", nullptr, kColorTangerine, "COMIDA"},
+    {"mascota", nullptr, kColorPink, "MASCOTA"},
+    {"reunion", MATERIAL_SYMBOLS_PERSON, kColorViolet, "REUNIÓN"},
+    {"otro", nullptr, kColorDim, "EVENTO"},
+};
+constexpr int kAgendaCategoryCount = sizeof(kAgendaCategoryList) / sizeof(kAgendaCategoryList[0]);
+constexpr int kAgendaCategoryOther = kAgendaCategoryCount - 1;
+
+int AgendaCategoryIndex(const std::string& icon) {
+    for (int index = 0; index < kAgendaCategoryCount; index++) {
+        if (icon == kAgendaCategoryList[index].name) {
+            return index;
+        }
+    }
+    return kAgendaCategoryOther;
+}
+
+const lv_font_t* IconFont() {
+    return &BUILTIN_ICON_FONT;
+}
+
+// Para la fecha provisoria de la vista de un dia, hasta que llegue la del
+// servidor (mismo formato: "jueves 23 de octubre"). 0 = lunes.
+const char* kWeekdayNameList[] = {"lunes", "martes", "miércoles", "jueves",
+                                  "viernes", "sábado", "domingo"};
+const char* kMonthLowerNameList[] = {"enero",  "febrero", "marzo",     "abril",
+                                     "mayo",   "junio",   "julio",     "agosto",
+                                     "septiembre", "octubre", "noviembre", "diciembre"};
+
+int TextWidth(lv_obj_t* label, const char* text) {
+    const lv_font_t* font = lv_obj_get_style_text_font(label, LV_PART_MAIN);
+    if (font == nullptr || text == nullptr || text[0] == '\0') {
+        return 0;
+    }
+    lv_point_t size;
+    lv_text_get_size(&size, text, font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    return (int)size.x;
+}
+
+// Texto que corta de palabra en `width` px y se queda en `max_lines`
+// renglones (con "..." al final si no entra). El alto se fija solo cuando
+// hace falta recortar: si entra, el label mide lo que mide el texto.
+void SetClampedText(lv_obj_t* label, const std::string& text, int width, int max_lines) {
+    SetLabelText(label, text.c_str());
+    SetHidden(label, text.empty());
+    const lv_font_t* font = lv_obj_get_style_text_font(label, LV_PART_MAIN);
+    if (font == nullptr || text.empty()) {
+        return;
+    }
+    const int line_height = std::max(1, (int)lv_font_get_line_height(font));
+    lv_point_t size;
+    lv_text_get_size(&size, text.c_str(), font, 0, 0, width, LV_TEXT_FLAG_NONE);
+    const int32_t height =
+        size.y > max_lines * line_height ? max_lines * line_height : LV_SIZE_CONTENT;
+    if (lv_obj_get_style_height(label, LV_PART_MAIN) != height) {
+        lv_obj_set_height(label, height);
+    }
+}
+
+// "Compras" -> "COMPRAS" para el encabezado, como los demas rotulos. Solo
+// ASCII: tocar los bytes de una letra acentuada en UTF-8 la romperia.
+std::string UpperAscii(const std::string& text) {
+    std::string result = text;
+    for (char& character : result) {
+        if (character >= 'a' && character <= 'z') {
+            character = (char)(character - 'a' + 'A');
+        }
+    }
+    return result;
+}
+
 }  // namespace
 
 JarvisDashboardDisplay::JarvisDashboardDisplay(esp_lcd_panel_io_handle_t panel_io,
@@ -422,23 +544,87 @@ void JarvisDashboardDisplay::BuildAgendaColumn(lv_obj_t* parent) {
     lv_obj_t* agenda_body = MakeTransparentBox(agenda, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_width(agenda_body, LV_PCT(100));
     lv_obj_set_flex_grow(agenda_body, 1);
-    lv_obj_set_style_pad_row(agenda_body, 4, 0);
+    lv_obj_set_style_pad_row(agenda_body, 0, 0);
     agenda_body_ = agenda_body;
 
+    // Agenda v2: un renglon por evento (icono + titulo + "· cuando") en vez
+    // de dos. El titulo usa el ancho real de la columna (ver PaintAgendaRow):
+    // antes el servidor lo cortaba a 22 caracteres y quedaba media columna
+    // vacia.
     for (int slot = 0; slot < kAgendaSlotCount; slot++) {
-        agenda_title_list_[slot] = lv_label_create(agenda_body);
-        lv_obj_set_width(agenda_title_list_[slot], LV_PCT(100));
-        lv_label_set_long_mode(agenda_title_list_[slot], LV_LABEL_LONG_DOT);
-        lv_label_set_text(agenda_title_list_[slot], "");
-        StyleTileText(agenda_title_list_[slot], kColorInk);
-        lv_obj_add_flag(agenda_title_list_[slot], LV_OBJ_FLAG_HIDDEN);
+        BuildAgendaRow(agenda_body, agenda_row_list_[slot]);
+    }
+}
 
-        agenda_when_list_[slot] = lv_label_create(agenda_body);
-        lv_obj_set_width(agenda_when_list_[slot], LV_PCT(100));
-        lv_label_set_long_mode(agenda_when_list_[slot], LV_LABEL_LONG_DOT);
-        lv_label_set_text(agenda_when_list_[slot], "");
-        StyleTileText(agenda_when_list_[slot], kColorTangerine);
-        lv_obj_add_flag(agenda_when_list_[slot], LV_OBJ_FLAG_HIDDEN);
+void JarvisDashboardDisplay::BuildAgendaRow(lv_obj_t* parent, AgendaRowWidgets& widgets) {
+    lv_obj_t* row = MakeTransparentBox(parent, LV_FLEX_FLOW_ROW);
+    lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_ver(row, kAgendaRowPadVer, 0);
+    lv_obj_set_style_pad_column(row, kAgendaRowGap, 0);
+    lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_width(row, 1, 0);
+    lv_obj_set_style_border_color(row, lv_color_hex(kColorTileLine), 0);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+    widgets.row = row;
+
+    // El icono es un label con la fuente de iconos; la marca de color (para
+    // las categorias sin glifo) es hija del icono, asi ocupa el mismo lugar y
+    // los titulos quedan alineados.
+    widgets.icon = lv_label_create(row);
+    lv_obj_set_style_text_font(widgets.icon, IconFont(), 0);
+    lv_obj_set_width(widgets.icon, kAgendaIconWidth);
+    lv_obj_set_style_text_align(widgets.icon, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(widgets.icon, "");
+
+    widgets.dot = lv_obj_create(widgets.icon);
+    lv_obj_set_size(widgets.dot, kAgendaDotSize, kAgendaDotSize);
+    lv_obj_set_style_radius(widgets.dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(widgets.dot, 0, 0);
+    lv_obj_set_style_pad_all(widgets.dot, 0, 0);
+    lv_obj_clear_flag(widgets.dot, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_center(widgets.dot);
+    lv_obj_add_flag(widgets.dot, LV_OBJ_FLAG_HIDDEN);
+
+    widgets.title = lv_label_create(row);
+    lv_obj_set_width(widgets.title, 0);
+    lv_label_set_long_mode(widgets.title, LV_LABEL_LONG_DOT);
+    lv_label_set_text(widgets.title, "");
+    StyleTileText(widgets.title, kColorInk);
+
+    widgets.when = lv_label_create(row);
+    lv_label_set_text(widgets.when, "");
+    StyleTileText(widgets.when, kColorTangerine);
+}
+
+// Pinta un renglon de agenda. `row_width` es el ancho de contenido del
+// renglon: el "· cuando" se ve siempre entero y el titulo se queda con lo que
+// sobra, cortado con "..." solo si de verdad no entra.
+void JarvisDashboardDisplay::PaintAgendaRow(AgendaRowWidgets& widgets, const AgendaEntry& entry,
+                                            int row_width) {
+    const int category = AgendaCategoryIndex(entry.icon);
+    if (category != widgets.painted_icon) {
+        widgets.painted_icon = category;
+        const AgendaCategory& look = kAgendaCategoryList[category];
+        lv_label_set_text(widgets.icon, look.glyph == nullptr ? "" : look.glyph);
+        lv_obj_set_style_text_color(widgets.icon, lv_color_hex(look.color), 0);
+        lv_obj_set_style_bg_color(widgets.dot, lv_color_hex(look.color), 0);
+        SetHidden(widgets.dot, look.glyph != nullptr);
+    }
+
+    SetLabelText(widgets.title, entry.title.c_str());
+    const std::string when = entry.when_label.empty() ? "" : "· " + entry.when_label;
+    SetLabelText(widgets.when, when.c_str());
+
+    const int when_width = TextWidth(widgets.when, when.c_str());
+    const int gap_count = when.empty() ? 1 : 2;
+    const int available = row_width - kAgendaIconWidth - gap_count * kAgendaRowGap - when_width;
+    // +1: con el ancho exacto del texto el redondeo a veces ya pone "...".
+    const int wanted = TextWidth(widgets.title, entry.title.c_str()) + 1;
+    const int title_width = std::max(0, std::min(wanted, available));
+    if (title_width != widgets.title_width) {
+        widgets.title_width = title_width;
+        lv_obj_set_width(widgets.title, title_width);
     }
 }
 
@@ -452,6 +638,23 @@ void JarvisDashboardDisplay::BuildPendingColumn(lv_obj_t* parent) {
 
     // El contador va pegado al encabezado, alineado a la derecha.
     lv_obj_t* head = lv_obj_get_child(tile, 0);
+    pending_title_label_ = lv_obj_get_child(head, 1);
+
+    // Flechas "‹ PENDIENTES ›": alternan con la lista de compras cuando el
+    // servidor manda las dos. Son glifos de la fuente de iconos (la de texto
+    // no tiene ‹ ›); escondidas mientras haya una sola lista.
+    auto make_arrow = [head](const char* glyph) {
+        lv_obj_t* arrow = lv_label_create(head);
+        lv_obj_set_style_text_font(arrow, IconFont(), 0);
+        lv_label_set_text(arrow, glyph);
+        StyleTileText(arrow, kColorViolet);
+        lv_obj_add_flag(arrow, LV_OBJ_FLAG_HIDDEN);
+        return arrow;
+    };
+    list_prev_arrow_ = make_arrow(MATERIAL_SYMBOLS_KEYBOARD_ARROW_LEFT);
+    lv_obj_move_to_index(list_prev_arrow_, 1);  // entre el cuadradito y el rotulo
+    list_next_arrow_ = make_arrow(MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
+
     lv_obj_t* spacer = lv_obj_create(head);
     lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(spacer, 0, 0);
@@ -826,6 +1029,38 @@ JarvisDashboardDisplay::TouchTarget JarvisDashboardDisplay::HitTest(int x, int y
     if (reminder_overlay_ != nullptr && !lv_obj_has_flag(reminder_overlay_, LV_OBJ_FLAG_HIDDEN)) {
         return target;
     }
+
+    // Agenda v2: el detalle y la vista de un dia se adueñan del toque. Nada de
+    // lo de abajo (pestañas, botones, mosaicos) responde mientras esten
+    // abiertos; deslizar tampoco (ShowAdjacentView). Un toque sobre nada da
+    // kOverlayBlock y no kNone, para que no viaje como tap al servidor ni se
+    // vuelva push-to-talk.
+    if (!IsHidden(event_modal_)) {
+        if (IsInside(event_close_button_, x, y, kOverlayButtonHitMargin) ||
+            !IsInside(event_card_, x, y, 0)) {
+            // Tocar afuera de la tarjeta tambien cierra, como en el celular.
+            target.kind = TouchTargetKind::kModalClose;
+        } else {
+            target.kind = TouchTargetKind::kOverlayBlock;
+        }
+        return target;
+    }
+    if (!IsHidden(day_view_)) {
+        target.kind = TouchTargetKind::kOverlayBlock;
+        if (IsInside(day_cancel_button_, x, y, kOverlayButtonHitMargin)) {
+            target.kind = TouchTargetKind::kDayCancel;
+            return target;
+        }
+        for (int slot = 0; slot < kDayEntrySlotCount; slot++) {
+            if (day_slot_entry_list_[slot] >= 0 && IsInside(day_row_list_[slot].row, x, y, 0)) {
+                target.kind = TouchTargetKind::kDayRow;
+                target.index = day_slot_entry_list_[slot];
+                return target;
+            }
+        }
+        return target;
+    }
+
     // Las pestañas son chicas (el texto y poco más, en una barra de 34 px): con
     // 10 px de margen un dedo las erraba y el toque terminaba como tap común
     // (se oía el error de "sin servidor" y la vista no cambiaba). La zona de
@@ -858,6 +1093,50 @@ JarvisDashboardDisplay::TouchTarget JarvisDashboardDisplay::HitTest(int x, int y
             target.kind = TouchTargetKind::kTalk;
         } else if (IsInside(send_button_, x, y, 0)) {
             target.kind = TouchTargetKind::kSend;
+        }
+        if (target.kind != TouchTargetKind::kNone) {
+            return target;
+        }
+        // Flechas de Pendientes/Compras (solo visibles con las dos listas).
+        if (IsInside(list_prev_arrow_, x, y, kListArrowHitMargin)) {
+            target.kind = TouchTargetKind::kListSwitch;
+            target.index = -1;
+            return target;
+        }
+        if (IsInside(list_next_arrow_, x, y, kListArrowHitMargin)) {
+            target.kind = TouchTargetKind::kListSwitch;
+            target.index = 1;
+            return target;
+        }
+        for (int slot = 0; slot < agenda_shown_count_; slot++) {
+            if (IsInside(agenda_row_list_[slot].row, x, y, 0)) {
+                target.kind = TouchTargetKind::kAgendaRow;
+                target.index = slot;
+                return target;
+            }
+        }
+        // Un dia del mes: cada columna del calendario es un label con la
+        // inicial y seis semanas, un renglon por semana.
+        if (calendar_valid_) {
+            for (int column_index = 0; column_index < kWeekdayCount; column_index++) {
+                lv_obj_t* column = calendar_column_list_[column_index];
+                if (!IsInside(column, x, y, 0)) {
+                    continue;
+                }
+                lv_area_t area;
+                lv_obj_get_coords(column, &area);
+                const int pitch = std::max(
+                    1, LineHeightOf(column) +
+                           (int)lv_obj_get_style_text_line_space(column, LV_PART_MAIN));
+                const int row = (y - area.y1) / pitch;  // 0 = la inicial del dia
+                const int day = (row - 1) * kWeekdayCount + column_index -
+                                calendar_first_weekday_ + 1;
+                if (row >= 1 && row <= 6 && day >= 1 && day <= calendar_day_count_) {
+                    target.kind = TouchTargetKind::kCalendarDay;
+                    target.index = day;
+                }
+                break;
+            }
         }
         return target;
     }
@@ -931,6 +1210,446 @@ bool JarvisDashboardDisplay::ApplyTileAction(const TouchTarget& target, std::str
     return true;
 }
 
+void JarvisDashboardDisplay::ApplyAgendaTouch(const TouchTarget& target) {
+    DisplayLockGuard lock(this);
+    switch (target.kind) {
+        case TouchTargetKind::kAgendaRow:
+            // El renglon se resolvio al apoyar el dedo; si entre tanto llego
+            // una agenda mas corta, el toque ya no apunta a nada.
+            if (IsHidden(day_view_) && target.index >= 0 &&
+                target.index < agenda_shown_count_ &&
+                target.index < (int)agenda_entry_list_.size()) {
+                ShowEventModal(agenda_entry_list_[target.index]);
+            }
+            break;
+        case TouchTargetKind::kDayRow:
+            if (!IsHidden(day_view_) && target.index >= 0 &&
+                target.index < (int)day_entry_list_.size()) {
+                ShowEventModal(day_entry_list_[target.index]);
+            }
+            break;
+        case TouchTargetKind::kModalClose:
+            CloseEventModal();
+            break;
+        case TouchTargetKind::kDayCancel:
+            CloseDayView();
+            break;
+        case TouchTargetKind::kListSwitch: {
+            const TodoList& pending = todo_list_list_[(int)TodoListKind::kPending];
+            const TodoList& shopping = todo_list_list_[(int)TodoListKind::kShopping];
+            if (!pending.present || !shopping.present) {
+                break;
+            }
+            // Son dos listas: cualquiera de las flechas pasa a la otra.
+            active_todo_list_ = ShownTodoList() == TodoListKind::kPending
+                                    ? TodoListKind::kShopping
+                                    : TodoListKind::kPending;
+            ESP_LOGI(TAG, "tarjeta del medio: %s",
+                     active_todo_list_ == TodoListKind::kPending ? "pendientes" : "compras");
+            PaintTodoCard();
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+bool JarvisDashboardDisplay::IsAgendaOverlayOpen() {
+    DisplayLockGuard lock(this);
+    return !IsHidden(event_modal_) || !IsHidden(day_view_);
+}
+
+JarvisDashboardDisplay::TodoListKind JarvisDashboardDisplay::ShownTodoList() {
+    const TodoListKind other = active_todo_list_ == TodoListKind::kPending
+                                   ? TodoListKind::kShopping
+                                   : TodoListKind::kPending;
+    if (!todo_list_list_[(int)active_todo_list_].present &&
+        todo_list_list_[(int)other].present) {
+        return other;
+    }
+    return active_todo_list_;
+}
+
+// La tarjeta del medio muestra la lista elegida (o la unica que vino). La
+// eleccion no se pisa cuando una lista desaparece un rato: vuelve sola cuando
+// la lista vuelve a venir.
+void JarvisDashboardDisplay::PaintTodoCard() {
+    const TodoListKind shown = ShownTodoList();
+    const TodoList& list = todo_list_list_[(int)shown];
+    const bool both = todo_list_list_[0].present && todo_list_list_[1].present;
+    SetHidden(list_prev_arrow_, !both);
+    SetHidden(list_next_arrow_, !both);
+
+    const char* fallback_name = shown == TodoListKind::kPending ? "PENDIENTES" : "COMPRAS";
+    const std::string heading = list.list_name.empty() ? fallback_name : UpperAscii(list.list_name);
+    SetLabelText(pending_title_label_, heading.c_str());
+
+    for (int slot = 0; slot < kPendingSlotCount; slot++) {
+        const bool used = list.present && slot < (int)list.item_list.size();
+        if (used) {
+            // El punto va en el texto: un objeto menos por fila, y son cuatro.
+            const std::string bulleted = "- " + list.item_list[slot];
+            SetLabelText(pending_row_list_[slot], bulleted.c_str());
+        }
+        SetHidden(pending_row_list_[slot], !used);
+    }
+    char count_text[8];
+    snprintf(count_text, sizeof(count_text), "%d", list.count);
+    SetLabelText(pending_count_label_, list.present && list.has_count ? count_text : "");
+}
+
+// ---- Vista de un dia y detalle de un evento (Agenda v2) ---------------------
+
+lv_obj_t* JarvisDashboardDisplay::MakeOverlayButton(lv_obj_t* parent, uint32_t accent,
+                                                    const char* text) {
+    lv_obj_t* button = lv_obj_create(parent);
+    lv_obj_set_size(button, ScaledWidth(200), IsCompactScreen() ? 48 : 56);
+    lv_obj_set_style_bg_color(button, lv_color_hex(kColorTile), 0);
+    lv_obj_set_style_border_color(button, lv_color_hex(accent), 0);
+    lv_obj_set_style_border_width(button, 2, 0);
+    lv_obj_set_style_radius(button, 12, 0);
+    lv_obj_set_style_pad_all(button, 0, 0);
+    lv_obj_set_scrollbar_mode(button, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(button, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t* label = lv_label_create(button);
+    lv_label_set_text(label, text);
+    StyleTileText(label, accent);
+    lv_obj_center(label);
+    return button;
+}
+
+// Pantalla completa, como el recordatorio: encabezado con la fecha, dos
+// columnas de renglones (los mismos de Inicio) y Cancelar abajo.
+void JarvisDashboardDisplay::BuildDayView(lv_obj_t* parent) {
+    const bool compact = IsCompactScreen();
+    day_view_ = lv_obj_create(parent);
+    lv_obj_set_size(day_view_, LV_HOR_RES, LV_VER_RES);
+    lv_obj_align(day_view_, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_set_style_bg_color(day_view_, lv_color_hex(kColorScreen), 0);
+    lv_obj_set_style_bg_opa(day_view_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(day_view_, lv_color_hex(kColorTangerine), 0);
+    lv_obj_set_style_border_width(day_view_, 3, 0);
+    lv_obj_set_style_radius(day_view_, 0, 0);
+    lv_obj_set_style_pad_all(day_view_, compact ? 12 : 18, 0);
+    lv_obj_set_style_pad_row(day_view_, compact ? 8 : 12, 0);
+    lv_obj_set_flex_flow(day_view_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(day_view_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_scrollbar_mode(day_view_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(day_view_, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* head = MakeTransparentBox(day_view_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_size(head, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_column(head, 12, 0);
+    lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_t* tag = lv_label_create(head);
+    lv_label_set_text(tag, "AGENDA");
+    lv_obj_set_style_text_letter_space(tag, 3, 0);
+    StyleTileText(tag, kColorTangerine);
+    day_heading_label_ = lv_label_create(head);
+    lv_obj_set_flex_grow(day_heading_label_, 1);
+    lv_label_set_long_mode(day_heading_label_, LV_LABEL_LONG_DOT);
+    lv_label_set_text(day_heading_label_, "");
+    StyleTileText(day_heading_label_, kColorInk);
+
+    day_list_area_ = MakeTransparentBox(day_view_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_width(day_list_area_, LV_PCT(100));
+    lv_obj_set_flex_grow(day_list_area_, 1);
+    lv_obj_set_style_pad_column(day_list_area_, 2 * kGap, 0);
+    constexpr int kRowsPerColumn = kDayEntrySlotCount / kDayColumnCount;
+    for (int column_index = 0; column_index < kDayColumnCount; column_index++) {
+        lv_obj_t* column = MakeTransparentBox(day_list_area_, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_height(column, LV_PCT(100));
+        lv_obj_set_flex_grow(column, 1);
+        day_column_list_[column_index] = column;
+        for (int row = 0; row < kRowsPerColumn; row++) {
+            BuildAgendaRow(column, day_row_list_[column_index * kRowsPerColumn + row]);
+        }
+    }
+
+    // "Cargando...", "No pude traer la agenda", "Sin eventos": en el medio
+    // de la lista, fuera del flex.
+    day_message_label_ = lv_label_create(day_list_area_);
+    lv_obj_add_flag(day_message_label_, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_label_set_text(day_message_label_, "");
+    StyleTileText(day_message_label_, kColorDim);
+    lv_obj_center(day_message_label_);
+
+    day_cancel_button_ = MakeOverlayButton(day_view_, kColorTangerine, "Cancelar");
+    lv_obj_add_flag(day_view_, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Detalle: tarjeta centrada sobre el tablero oscurecido. Se crea despues de la
+// vista de un dia para quedar por encima de ella.
+void JarvisDashboardDisplay::BuildEventModal(lv_obj_t* parent) {
+    const bool compact = IsCompactScreen();
+    event_modal_ = lv_obj_create(parent);
+    lv_obj_set_size(event_modal_, LV_HOR_RES, LV_VER_RES);
+    lv_obj_align(event_modal_, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_set_style_bg_color(event_modal_, lv_color_hex(kColorScreen), 0);
+    lv_obj_set_style_bg_opa(event_modal_, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(event_modal_, 0, 0);
+    lv_obj_set_style_radius(event_modal_, 0, 0);
+    lv_obj_set_style_pad_all(event_modal_, 0, 0);
+    lv_obj_set_scrollbar_mode(event_modal_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(event_modal_, LV_OBJ_FLAG_SCROLLABLE);
+
+    const int card_width = std::min((int)LV_HOR_RES - 80, ScaledWidth(600));
+    const int pad = compact ? 16 : 22;
+    constexpr int kBorder = 2;
+    event_text_width_ = card_width - 2 * pad - 2 * kBorder;
+
+    event_card_ = lv_obj_create(event_modal_);
+    lv_obj_set_size(event_card_, card_width, LV_SIZE_CONTENT);
+    lv_obj_set_style_max_height(event_card_, LV_VER_RES - 24, 0);
+    lv_obj_set_style_bg_color(event_card_, lv_color_hex(kColorTile), 0);
+    lv_obj_set_style_bg_opa(event_card_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(event_card_, lv_color_hex(kColorTangerine), 0);
+    lv_obj_set_style_border_width(event_card_, kBorder, 0);
+    lv_obj_set_style_radius(event_card_, 12, 0);
+    lv_obj_set_style_pad_all(event_card_, pad, 0);
+    lv_obj_set_style_pad_row(event_card_, compact ? 6 : 9, 0);
+    lv_obj_set_flex_flow(event_card_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scrollbar_mode(event_card_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(event_card_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_center(event_card_);
+
+    // Encabezado: icono de la categoria y su nombre.
+    lv_obj_t* head = MakeTransparentBox(event_card_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_size(head, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_column(head, 8, 0);
+    lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    event_icon_label_ = lv_label_create(head);
+    lv_obj_set_style_text_font(event_icon_label_, IconFont(), 0);
+    lv_obj_set_width(event_icon_label_, kAgendaIconWidth);
+    lv_obj_set_style_text_align(event_icon_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(event_icon_label_, "");
+    event_icon_dot_ = lv_obj_create(event_icon_label_);
+    lv_obj_set_size(event_icon_dot_, kAgendaDotSize, kAgendaDotSize);
+    lv_obj_set_style_radius(event_icon_dot_, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(event_icon_dot_, 0, 0);
+    lv_obj_clear_flag(event_icon_dot_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_center(event_icon_dot_);
+    event_category_label_ = lv_label_create(head);
+    lv_label_set_text(event_category_label_, "");
+    lv_obj_set_style_text_letter_space(event_category_label_, 2, 0);
+    StyleTileText(event_category_label_, kColorDim);
+
+    // Titulo completo con la fuente grande (la de 30 px en flash, ver arriba).
+    auto make_text = [this](uint32_t color, bool big) {
+        lv_obj_t* label = lv_label_create(event_card_);
+        if (big) {
+            lv_obj_set_style_text_font(label, BigFont(), 0);
+        }
+        lv_obj_set_width(label, LV_PCT(100));
+        lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+        lv_label_set_text(label, "");
+        StyleTileText(label, color);
+        return label;
+    };
+    event_title_label_ = make_text(kColorInk, true);
+    event_when_label_ = make_text(kColorTangerine, false);
+    event_location_label_ = make_text(kColorInk, false);
+    event_description_label_ = make_text(kColorDim, false);
+
+    // Abajo: el origen a la izquierda y Cerrar a la derecha, en un renglon.
+    lv_obj_t* foot = MakeTransparentBox(event_card_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_size(foot, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_top(foot, 4, 0);
+    lv_obj_set_style_pad_column(foot, 12, 0);
+    lv_obj_set_flex_align(foot, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    event_source_label_ = lv_label_create(foot);
+    lv_obj_set_flex_grow(event_source_label_, 1);
+    lv_label_set_long_mode(event_source_label_, LV_LABEL_LONG_DOT);
+    lv_label_set_text(event_source_label_, "");
+    StyleTileText(event_source_label_, kColorDim);
+    event_close_button_ = MakeOverlayButton(foot, kColorTangerine, "Cerrar");
+    lv_obj_set_width(event_close_button_, ScaledWidth(150));
+
+    lv_obj_add_flag(event_modal_, LV_OBJ_FLAG_HIDDEN);
+}
+
+void JarvisDashboardDisplay::ShowEventModal(const AgendaEntry& entry) {
+    if (event_modal_ == nullptr) {
+        return;
+    }
+    const AgendaCategory& look = kAgendaCategoryList[AgendaCategoryIndex(entry.icon)];
+    SetLabelText(event_icon_label_, look.glyph == nullptr ? "" : look.glyph);
+    lv_obj_set_style_text_color(event_icon_label_, lv_color_hex(look.color), 0);
+    lv_obj_set_style_bg_color(event_icon_dot_, lv_color_hex(look.color), 0);
+    SetHidden(event_icon_dot_, look.glyph != nullptr);
+    SetLabelText(event_category_label_, look.heading);
+
+    const AgendaDetail& detail = entry.detail;
+    const std::string& title =
+        entry.has_detail && !detail.full_title.empty() ? detail.full_title : entry.title;
+    SetClampedText(event_title_label_, title, event_text_width_, kEventTitleMaxLines);
+
+    // "jueves 23 de octubre · 11:00 a 12:00"; sin detalle (servidor viejo),
+    // el "cuando" corto de la agenda.
+    std::string when;
+    if (entry.has_detail) {
+        when = detail.date_label;
+        if (!detail.time_label.empty()) {
+            when += (when.empty() ? "" : " · ") + detail.time_label;
+        }
+    }
+    if (when.empty()) {
+        when = entry.when_label;
+    }
+    SetClampedText(event_when_label_, when, event_text_width_, 1);
+    SetClampedText(event_location_label_,
+                   detail.location.empty() ? std::string() : "Lugar: " + detail.location,
+                   event_text_width_, kEventLocationMaxLines);
+    SetClampedText(event_description_label_, detail.description, event_text_width_,
+                   kEventDescriptionMaxLines);
+    SetLabelText(event_source_label_, detail.source_label.c_str());
+
+    SetHidden(event_modal_, false);
+    // Mismo motivo que el recordatorio: en direct_mode + full_refresh
+    // mostrar un objeto no alcanza, hay que repintar la pantalla entera.
+    lv_obj_invalidate(lv_screen_active());
+    if (!entry.id.empty()) {
+        ESP_LOGI(TAG, "detalle de evento: %s", entry.id.c_str());
+    }
+}
+
+void JarvisDashboardDisplay::CloseEventModal() {
+    if (IsHidden(event_modal_)) {
+        return;
+    }
+    SetHidden(event_modal_, true);
+    lv_obj_invalidate(lv_screen_active());
+}
+
+void JarvisDashboardDisplay::CloseDayView() {
+    if (day_timeout_timer_ != nullptr) {
+        esp_timer_stop(day_timeout_timer_);
+    }
+    day_view_state_ = DayViewState::kClosed;
+    if (IsHidden(day_view_)) {
+        return;
+    }
+    SetHidden(day_view_, true);
+    lv_obj_invalidate(lv_screen_active());
+}
+
+void JarvisDashboardDisplay::CloseAgendaOverlays() {
+    CloseEventModal();
+    CloseDayView();
+}
+
+void JarvisDashboardDisplay::SetDayViewMessage(const char* message) {
+    SetLabelText(day_message_label_, message);
+    SetHidden(day_message_label_, message == nullptr || message[0] == '\0');
+}
+
+// Renglones por columna de la vista de un dia. La columna se midio en
+// SetupUI (escondida conserva su tamaño); el alto del renglon sale de la
+// fuente actual, que Assets::Apply puede cambiar despues del arranque.
+int JarvisDashboardDisplay::DayRowCapacity() {
+    if (day_column_list_[0] == nullptr) {
+        return 0;
+    }
+    const int capacity = (int)lv_obj_get_content_height(day_column_list_[0]) /
+                         std::max(1, AgendaRowHeight());
+    return std::min(std::max(capacity, 0), (int)(kDayEntrySlotCount / kDayColumnCount));
+}
+
+bool JarvisDashboardDisplay::OpenDayView(int day, std::string* date) {
+    DisplayLockGuard lock(this);
+    if (day_view_ == nullptr || !calendar_valid_ || day < 1 || day > calendar_day_count_ ||
+        !IsHidden(event_modal_)) {
+        return false;
+    }
+    char date_text[40];
+    snprintf(date_text, sizeof(date_text), "%04d-%02d-%02d", calendar_year_, calendar_month_,
+             day);
+    *date = date_text;
+    day_view_date_ = date_text;
+
+    // Fecha provisoria hasta que llegue la del servidor (mismo formato).
+    char heading[64];
+    snprintf(heading, sizeof(heading), "%s %d de %s",
+             kWeekdayNameList[(calendar_first_weekday_ + day - 1) % kWeekdayCount], day,
+             kMonthLowerNameList[(calendar_month_ - 1) % 12]);
+    SetLabelText(day_heading_label_, heading);
+
+    day_entry_list_.clear();
+    day_shown_count_ = 0;
+    for (int slot = 0; slot < kDayEntrySlotCount; slot++) {
+        day_slot_entry_list_[slot] = -1;
+        SetHidden(day_row_list_[slot].row, true);
+    }
+    // La fuente no tiene "…": tres puntos, como en el resto del tablero.
+    SetDayViewMessage("Cargando...");
+    day_view_state_ = DayViewState::kLoading;
+    day_request_started_us_ = esp_timer_get_time();
+    if (day_timeout_timer_ != nullptr) {
+        esp_timer_stop(day_timeout_timer_);
+        esp_timer_start_once(day_timeout_timer_, kDayRequestTimeoutMicroseconds);
+    }
+
+    SetHidden(day_view_, false);
+    lv_obj_invalidate(lv_screen_active());
+    ESP_LOGI(TAG, "vista del dia %s", date_text);
+    return true;
+}
+
+void JarvisDashboardDisplay::OnDayTimeout() {
+    DisplayLockGuard lock(this);
+    // El temporizador de un pedido anterior pudo haber disparado justo antes
+    // de reiniciarse: solo cuenta si este pedido ya cumplio sus 5 s.
+    if (day_view_state_ != DayViewState::kLoading ||
+        esp_timer_get_time() - day_request_started_us_ < kDayRequestTimeoutMicroseconds - 50000) {
+        return;
+    }
+    day_view_state_ = DayViewState::kFailed;
+    SetDayViewMessage("No pude traer la agenda");
+    ESP_LOGW(TAG, "agenda_day %s: sin respuesta en 5 s", day_view_date_.c_str());
+}
+
+void JarvisDashboardDisplay::SetAgendaDay(const std::string& date, const std::string& date_label,
+                                          const std::vector<AgendaEntry>& entry_list) {
+    DisplayLockGuard lock(this);
+    // Una respuesta tardia todavia sirve (corrige el "No pude traer"); una de
+    // otro dia o con la vista cerrada, no.
+    if (day_view_state_ == DayViewState::kClosed || date != day_view_date_) {
+        ESP_LOGI(TAG, "agenda_day %s ignorada (vista: %s)", date.c_str(),
+                 day_view_state_ == DayViewState::kClosed ? "cerrada" : day_view_date_.c_str());
+        return;
+    }
+    if (day_timeout_timer_ != nullptr) {
+        esp_timer_stop(day_timeout_timer_);
+    }
+    day_view_state_ = DayViewState::kLoaded;
+    if (!date_label.empty()) {
+        SetLabelText(day_heading_label_, date_label.c_str());
+    }
+
+    constexpr int kRowsPerColumn = kDayEntrySlotCount / kDayColumnCount;
+    const int per_column = std::max(1, std::min(DayRowCapacity(), kRowsPerColumn));
+    day_entry_list_.assign(entry_list.begin(),
+                           entry_list.begin() + std::min((int)entry_list.size(),
+                                                         (int)kDayEntrySlotCount));
+    day_shown_count_ = std::min((int)day_entry_list_.size(), per_column * kDayColumnCount);
+    for (int slot = 0; slot < kDayEntrySlotCount; slot++) {
+        day_slot_entry_list_[slot] = -1;
+    }
+    // Primero se llena la columna de la izquierda, despues la de la derecha.
+    for (int index = 0; index < day_shown_count_; index++) {
+        const int slot = (index / per_column) * kRowsPerColumn + index % per_column;
+        day_slot_entry_list_[slot] = index;
+        PaintAgendaRow(day_row_list_[slot], day_entry_list_[index], day_row_width_);
+    }
+    for (int slot = 0; slot < kDayEntrySlotCount; slot++) {
+        SetHidden(day_row_list_[slot].row, day_slot_entry_list_[slot] < 0);
+    }
+    SetDayViewMessage(day_entry_list_.empty() ? "Sin eventos" : "");
+    ESP_LOGI(TAG, "agenda_day %s: %d eventos, se ven %d", date.c_str(),
+             (int)entry_list.size(), day_shown_count_);
+}
+
 void JarvisDashboardDisplay::ShowView(View view) {
     DisplayLockGuard lock(this);
     if (overview_view_ == nullptr || house_view_ == nullptr || view == current_view_) {
@@ -948,6 +1667,12 @@ void JarvisDashboardDisplay::ShowView(View view) {
 
 void JarvisDashboardDisplay::ShowAdjacentView(int step) {
     DisplayLockGuard lock(this);
+    // Con un detalle o la vista de un dia abiertos, deslizar no cambia lo de
+    // abajo: se cierran con su boton (o tocando afuera del detalle).
+    if (!IsHidden(event_modal_) || !IsHidden(day_view_)) {
+        ESP_LOGI(TAG, "deslizar ignorado: hay un overlay de agenda abierto");
+        return;
+    }
     int next = ((int)current_view_ + step) % kViewCount;
     if (next < 0) {
         next += kViewCount;
@@ -1049,7 +1774,23 @@ void JarvisDashboardDisplay::SetupUI() {
     lv_obj_center(low_battery_label_);
     lv_obj_add_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
 
+    // Agenda v2: vista de un dia y detalle de un evento, colgados de `screen`
+    // como el recordatorio. El orden de creacion es el orden de apilado: el
+    // detalle por encima de la vista del dia y el recordatorio (que ademas se
+    // trae al frente al mostrarse) por encima de todo.
+    BuildDayView(screen);
+    BuildEventModal(screen);
     BuildReminderOverlay(screen);
+
+    esp_timer_create_args_t day_timer_args = {};
+    day_timer_args.callback = [](void* argument) {
+        static_cast<JarvisDashboardDisplay*>(argument)->OnDayTimeout();
+    };
+    day_timer_args.arg = this;
+    day_timer_args.name = "jarvis_agenda_day";
+    if (esp_timer_create(&day_timer_args, &day_timeout_timer_) != ESP_OK) {
+        day_timeout_timer_ = nullptr;
+    }
 
     // El reloj corre con el RTC de la placa. Diez segundos alcanzan para que la
     // hora nunca se vea vieja y no despierta al procesador cada segundo.
@@ -1084,6 +1825,35 @@ void JarvisDashboardDisplay::SetupUI() {
     current_view_ = View::kOverview;
     PaintTabs();
 
+    // Lo mismo con la vista de un dia y el detalle: se muestran una vez para
+    // medir cuantos renglones entran por columna y cuanto mide la tarjeta
+    // (con textos de prueba del largo maximo del contrato).
+    lv_obj_remove_flag(day_view_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(day_row_list_[0].row, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_update_layout(day_view_);
+    day_row_width_ = (int)lv_obj_get_content_width(day_row_list_[0].row);
+    const int day_row_capacity = DayRowCapacity();
+    const int day_list_height = (int)lv_obj_get_height(day_list_area_);
+    lv_obj_add_flag(day_row_list_[0].row, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(day_view_, LV_OBJ_FLAG_HIDDEN);
+    {
+        AgendaEntry sample;
+        sample.title = "Dentista";
+        sample.when_label = "en 3 días";
+        sample.has_detail = true;
+        sample.detail.full_title = std::string(80, 'M');
+        sample.detail.date_label = "miércoles 23 de septiembre";
+        sample.detail.time_label = "11:00 a 12:00";
+        sample.detail.location = std::string(60, 'M');
+        sample.detail.description = std::string(200, 'm');
+        sample.detail.source_label = "Recordatorio de Jarvis";
+        ShowEventModal(sample);
+    }
+    lv_obj_update_layout(event_modal_);
+    const int event_card_width = (int)lv_obj_get_width(event_card_);
+    const int event_card_height = (int)lv_obj_get_height(event_card_);
+    lv_obj_add_flag(event_modal_, LV_OBJ_FLAG_HIDDEN);
+
     // OJO: sin esto la pantalla queda NEGRA.
     //
     // El puerto de LVGL para este panel RGB corre con direct_mode + full_refresh
@@ -1097,6 +1867,7 @@ void JarvisDashboardDisplay::SetupUI() {
     // tienen arrancan en negro con la placa perfectamente sana.
     lv_obj_update_layout(container_);
     lv_obj_invalidate(lv_screen_active());
+    agenda_row_width_ = (int)lv_obj_get_content_width(agenda_body_);
 
     for (int view = 0; view < kViewCount; view++) {
         lv_area_t tab_area;
@@ -1121,6 +1892,13 @@ void JarvisDashboardDisplay::SetupUI() {
              (int)lv_obj_get_height(conversation_strip_), ConversationLineCapacity(),
              kConversationTextLineCount, tile_width, tile_height, (unsigned)internal_free_before,
              (unsigned)internal_free_after);
+    ESP_LOGI(TAG,
+             "agenda v2: renglon %dpx de alto, agenda %dpx de ancho; vista del dia: lista "
+             "de %dpx de alto, %d columnas de %d (de %d) renglones de %dpx; detalle %dx%d "
+             "(maximo %d)",
+             AgendaRowHeight(), agenda_row_width_, day_list_height, (int)kDayColumnCount,
+             day_row_capacity, (int)(kDayEntrySlotCount / kDayColumnCount), day_row_width_,
+             event_card_width, event_card_height, (int)LV_VER_RES - 24);
 }
 
 // LcdDisplay::SetTheme repinta la UI de chat entera y toca `emoji_label_`,
@@ -1210,18 +1988,26 @@ int JarvisDashboardDisplay::TodayEventCapacity() {
 }
 
 // Mismo criterio para la agenda, que perdio alto con la franja de conversacion
-// abajo: cada evento son dos renglones (titulo y cuando) y los que no entran
-// enteros se esconden. En la P4-7B entran los seis; en la 4.3C, menos.
+// abajo: desde Agenda v2 cada evento es un solo renglon (con aire para el
+// dedo) y los que no entran enteros se esconden.
 int JarvisDashboardDisplay::AgendaCapacity() {
     if (agenda_body_ == nullptr) {
         return 0;
     }
-    const int line_height = std::max(1, LineHeightOf(agenda_body_));
-    const int row_gap = (int)lv_obj_get_style_pad_row(agenda_body_, LV_PART_MAIN);
-    // n eventos = 2n renglones con 2n-1 separaciones entre ellos.
-    const int capacity = ((int)lv_obj_get_content_height(agenda_body_) + row_gap) /
-                         std::max(1, 2 * (line_height + row_gap));
+    const int capacity =
+        (int)lv_obj_get_content_height(agenda_body_) / std::max(1, AgendaRowHeight());
     return std::min(std::max(capacity, 0), (int)kAgendaSlotCount);
+}
+
+// Alto de un renglon de agenda: el mas alto de texto e icono, el aire de
+// arriba y abajo y la raya.
+int JarvisDashboardDisplay::AgendaRowHeight() {
+    if (agenda_body_ == nullptr) {
+        return kFallbackLineHeight;
+    }
+    const int line_height =
+        std::max(LineHeightOf(agenda_body_), (int)lv_font_get_line_height(IconFont()));
+    return line_height + 2 * kAgendaRowPadVer + 1;
 }
 
 // Renglones de texto que entran en la franja de conversacion (para el log).
@@ -1241,6 +2027,12 @@ void JarvisDashboardDisplay::ApplyMonthCalendar(const DashboardData& data) {
                        data.calendar_month <= 12 && data.calendar_day_count >= 28 &&
                        data.calendar_day_count <= 31 && data.calendar_first_weekday >= 0 &&
                        data.calendar_first_weekday < kWeekdayCount;
+
+    calendar_valid_ = valid;
+    calendar_year_ = data.calendar_year;
+    calendar_month_ = data.calendar_month;
+    calendar_first_weekday_ = data.calendar_first_weekday;
+    calendar_day_count_ = data.calendar_day_count;
 
     char heading[32] = "CALENDARIO";
     if (valid) {
@@ -1433,31 +2225,33 @@ void JarvisDashboardDisplay::SetDashboardData(const DashboardData& data) {
 
     ApplyWeather(data);
 
-    const int agenda_capacity = AgendaCapacity();
-    for (int slot = 0; data.agenda_present && slot < kAgendaSlotCount; slot++) {
-        const bool used = slot < agenda_capacity && slot < (int)data.agenda_list.size();
-        if (used) {
-            SetLabelText(agenda_title_list_[slot], data.agenda_list[slot].title.c_str());
-            SetLabelText(agenda_when_list_[slot], data.agenda_list[slot].when_label.c_str());
+    if (data.agenda_present) {
+        // Se guardan con su detalle: tocar un renglon abre el modal con esto.
+        agenda_entry_list_ = data.agenda_list;
+        agenda_shown_count_ = std::min(
+            {AgendaCapacity(), (int)agenda_entry_list_.size(), (int)kAgendaSlotCount});
+        for (int slot = 0; slot < kAgendaSlotCount; slot++) {
+            const bool used = slot < agenda_shown_count_;
+            if (used) {
+                PaintAgendaRow(agenda_row_list_[slot], agenda_entry_list_[slot],
+                               agenda_row_width_);
+            }
+            // Se muestran u ocultan, nunca se crean ni se destruyen.
+            SetHidden(agenda_row_list_[slot].row, !used);
         }
-        // Se muestran u ocultan, nunca se crean ni se destruyen.
-        SetHidden(agenda_title_list_[slot], !used);
-        SetHidden(agenda_when_list_[slot], !used);
     }
 
-    for (int slot = 0; data.pending_present && slot < kPendingSlotCount; slot++) {
-        const bool used = slot < (int)data.pending_item_list.size();
-        if (used) {
-            // El punto va en el texto: un objeto menos por fila, y son cuatro.
-            const std::string bulleted = "- " + data.pending_item_list[slot];
-            SetLabelText(pending_row_list_[slot], bulleted.c_str());
-        }
-        SetHidden(pending_row_list_[slot], !used);
-    }
-    if (pending_count_label_ != nullptr && data.pending_present) {
-        char count_text[8];
-        snprintf(count_text, sizeof(count_text), "%d", data.pending_count);
-        SetLabelText(pending_count_label_, data.has_pending ? count_text : "");
+    // Tarjeta del medio. Con `pending` presente el mensaje es del servidor de
+    // Jarvis, que manda `shopping` siempre que hay lista de compras: ahi que
+    // falte SI quiere decir que no hay (y no se ofrece). Sin `pending` es el
+    // otro emisor y las listas quedan como estaban.
+    if (data.pending.present) {
+        todo_list_list_[(int)TodoListKind::kPending] = data.pending;
+        todo_list_list_[(int)TodoListKind::kShopping] = data.shopping;
+        PaintTodoCard();
+    } else if (data.shopping.present) {
+        todo_list_list_[(int)TodoListKind::kShopping] = data.shopping;
+        PaintTodoCard();
     }
 
     if (travel_tile_ != nullptr && data.travel_present) {
@@ -1578,6 +2372,12 @@ void JarvisDashboardDisplay::SetStatus(const char* status) {
         // Una conversacion vuelve a Inicio: la franja y los botones viven ahi.
         if (strcmp(shown, Lang::Strings::LISTENING) == 0 ||
             strcmp(shown, Lang::Strings::SPEAKING) == 0) {
+            // Si el que empieza a hablar es el usuario, la franja de
+            // conversacion tiene que verse: el detalle y la vista de un dia se
+            // cierran. Si solo habla Jarvis (un anuncio), quedan abiertos.
+            if (strcmp(shown, Lang::Strings::LISTENING) == 0) {
+                CloseAgendaOverlays();
+            }
             ShowView(View::kOverview);
         }
         showing_thinking_ = false;

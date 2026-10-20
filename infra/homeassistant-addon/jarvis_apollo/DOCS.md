@@ -152,6 +152,20 @@ Assistant. Si el nombre encaja con más de una entidad ("la losa"), pregunta cu�
 - No pide confirmación, y sigue valiendo la regla de la etiqueta: sin `jarvis`, Jarvis no
   puede tocar una entidad aunque sepa su nombre. Detalle en `docs/home-assistant-setup.md`.
 
+### Agenda y lista de compras (desde la versión 0.6.0)
+
+- **Agendar:** "anotame en la agenda el jueves a las 11 el dentista" alcanza. Jarvis lo guarda
+  en el calendario de la opción **`agenda_calendar`** (`calendar.hogar` por defecto) con un emoji
+  en el título ("🦷 Dentista") y confirma en una frase. No pregunta cómo vas a ir ni crea
+  recordatorios aparte. "¿Qué tengo esta semana?" y "borrá el dentista" también andan; borrar
+  solo se puede en calendarios locales.
+- **En la placa:** tocar un evento abre su detalle (título completo, fecha, horario, lugar,
+  descripción) y tocar un día del calendario del mes muestra la agenda de ese día. El
+  calendario de `agenda_calendar` se muestra aunque no tenga la etiqueta `jarvis`.
+- **Compras:** "anotá leche en la lista de compras" (o "en el súper") va a la **Lista de
+  compras** de Home Assistant (`todo.shopping_list`); "pendientes" sigue siendo la lista interna
+  de Jarvis. La tarjeta del centro alterna las dos.
+
 ## Claude (opcional, desde la versión 0.4.0)
 
 Con una key de Anthropic, la **conversación** pasa a Claude; sin ella todo sigue por OpenRouter

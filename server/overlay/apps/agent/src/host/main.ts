@@ -16,8 +16,19 @@ import {
   createHomeAssistantClient,
   resolveHomeAssistantConnection,
 } from '@/homeassistant/client';
+import {
+  createHomeAssistantAgendaControl,
+  resolveAgendaCalendarEntityId,
+} from '@/homeassistant/agenda';
+import {
+  createHomeAssistantShoppingList,
+  setHomeShoppingList,
+  SHOPPING_LIST_DISPLAY_NAME,
+} from '@/homeassistant/shopping';
 import { createHomeAssistantDashboardSource } from '@/homeassistant/source';
 import { createHomeAssistantVoiceControl } from '@/homeassistant/voice';
+import { DEFAULT_AGENDA_TIMEZONE } from '@/dashboard/agenda';
+import { setHomeAgendaControl } from '@/tools/agenda';
 import { setHomeVoiceControl } from '@/tools/casa';
 import { startIdleRotation } from '@/idle/supervisor';
 import {
@@ -269,10 +280,49 @@ export async function startApolloHost(
     homeAssistantConnection === undefined
       ? undefined
       : createHomeAssistantClient({ connection: homeAssistantConnection });
+  // Agenda v2 (docs/vistas-tablero.md): el calendario donde agenda Jarvis
+  // (opción agenda_calendar → AGENDA_CALENDAR_ENTITY, calendar.hogar por
+  // defecto) y la lista de compras de HA (todo.shopping_list). Un cambio por
+  // voz invalida la caché y empuja el tablero enseguida.
+  const agendaCalendarEntityId = resolveAgendaCalendarEntityId(processEnvironment);
+  const refreshDashboardSoon = () => {
+    void dashboardSupervisor.refreshNow().catch(() => undefined);
+  };
+  const homeShoppingList =
+    homeAssistantClient === undefined
+      ? undefined
+      : createHomeAssistantShoppingList({
+          client: homeAssistantClient,
+          onChanged: () => {
+            homeAssistantSource?.invalidateShoppingCache();
+            refreshDashboardSoon();
+          },
+        });
+  setHomeShoppingList(homeShoppingList);
   const homeAssistantSource =
     homeAssistantClient === undefined
       ? undefined
-      : createHomeAssistantDashboardSource({ client: homeAssistantClient });
+      : createHomeAssistantDashboardSource({
+          client: homeAssistantClient,
+          agendaCalendarEntityId,
+          shoppingList: homeShoppingList,
+        });
+  setHomeAgendaControl(
+    homeAssistantClient === undefined || homeAssistantSource === undefined
+      ? undefined
+      : createHomeAssistantAgendaControl({
+          client: homeAssistantClient,
+          source: homeAssistantSource,
+          calendarEntityId: agendaCalendarEntityId,
+          resolveTimezone: async () =>
+            (await actor.resolveWeatherLocation().catch(() => undefined))?.timezone ??
+            DEFAULT_AGENDA_TIMEZONE,
+          onChanged: () => {
+            homeAssistantSource.invalidateCalendarCache();
+            refreshDashboardSoon();
+          },
+        }),
+  );
   // La misma conexión le da a Jarvis las herramientas casa_* (tools/casa.ts):
   // control por voz de lo etiquetado `jarvis`. Tras cada cambio se empuja el
   // tablero para que el mosaico lo muestre sin esperar la vuelta de 10 s.
@@ -293,6 +343,7 @@ export async function startApolloHost(
         message: 'home_assistant_tablero_habilitado',
         via: homeAssistantConnection.source,
         voz: true,
+        agenda: agendaCalendarEntityId,
       }),
     );
   }
@@ -337,10 +388,21 @@ export async function startApolloHost(
         ...(location === undefined ? {} : { timezone: location.timezone }),
         calendarEventList: homeAssistantData?.calendarEventList ?? [],
         reminderList: reminderRowList.map((row) => ({
+          id: row.id,
           text: row.message,
           dueAtMilliseconds: new Date(row.firesAtIso).getTime(),
         })),
         pending,
+        // Agenda v2: la tarjeta alterna Pendientes (interna) y Compras (HA).
+        ...(homeAssistantData?.shoppingItemList === undefined
+          ? {}
+          : {
+              shopping: {
+                listName: SHOPPING_LIST_DISPLAY_NAME,
+                count: homeAssistantData.shoppingItemList.length,
+                itemList: homeAssistantData.shoppingItemList,
+              },
+            }),
         travel,
         homeTileList: homeAssistantData?.tileList,
         dollarBlue,
@@ -366,6 +428,8 @@ export async function startApolloHost(
       // Aun si se rechazó: la placa ya pintó el cambio y el tablero lo corrige.
       await dashboardSupervisor.refreshNow();
     });
+    // Agenda v2: tocar un día del calendario del mes (agenda_day_request).
+    actor.attachAgendaEventReader((range) => homeAssistantSource.readAgendaEventList(range));
   }
 
   const activeThreadAccessor = actor.getActiveThreadSessionIdSetter();

@@ -1598,6 +1598,26 @@ void Application::SendHaAction(const std::string& entity_id, const std::string& 
     });
 }
 
+void Application::SendAgendaDayRequest(const std::string& date) {
+    Schedule([this, date]() {
+        if (!protocol_) {
+            return;
+        }
+        auto* apollo = dynamic_cast<ApolloProtocol*>(protocol_.get());
+        if (apollo == nullptr) {
+            ESP_LOGW(TAG, "agenda_day_request %s dropped: protocol is not Apollo", date.c_str());
+            return;
+        }
+        // Igual que un mosaico: se toca con la placa en reposo. Si no hay
+        // canal, la vista del dia dice "No pude traer la agenda" a los 5 s.
+        if (!protocol_->IsAudioChannelOpened() && !protocol_->OpenAudioChannel()) {
+            ESP_LOGW(TAG, "agenda_day_request %s dropped: no channel", date.c_str());
+            return;
+        }
+        apollo->SendAgendaDayRequest(date);
+    });
+}
+
 void Application::ShowConfirm(const std::string& summary, uint32_t timeout_ms) {
     Schedule([this, summary, timeout_ms]() {
         NoteUserActivity();

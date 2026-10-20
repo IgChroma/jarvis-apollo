@@ -45,6 +45,9 @@ const toolNameToThinkingHintMap = new Map<string, ThinkingHint>([
   ['casa_listar', { caption: 'Mirando la casa…', accentColor: ACCENT_SYSTEM }],
   ['casa_estado', { caption: 'Mirando la casa…', accentColor: ACCENT_SYSTEM }],
   ['casa_controlar', { caption: 'Hablando con la casa…', accentColor: ACCENT_SYSTEM }],
+  ['agenda_agregar', { caption: 'Anotando en la agenda…', accentColor: ACCENT_ORGANIZE }],
+  ['agenda_listar', { caption: 'Revisando la agenda…', accentColor: ACCENT_ORGANIZE }],
+  ['agenda_borrar', { caption: 'Borrando de la agenda…', accentColor: ACCENT_ORGANIZE }],
 ]);
 
 // Las herramientas MCP llegan con el nombre envuelto: el cliente le antepone el

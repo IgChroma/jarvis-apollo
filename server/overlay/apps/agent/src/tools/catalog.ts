@@ -1,3 +1,4 @@
+import { listAgendaToolDefinitionList } from '@/tools/agenda';
 import { listHomeToolDefinitionList } from '@/tools/casa';
 import { listCodingRepositoriesTool, startCodingTaskTool } from '@/tools/coding';
 import { deviceStatusTool, setBrightnessTool, setVolumeTool } from '@/tools/device';
@@ -65,6 +66,8 @@ export function listBuiltinToolDefinitionList(): readonly ToolDefinition[] {
     startCodingTaskTool,
     // Solo si el host tiene Home Assistant (tools/casa.ts).
     ...listHomeToolDefinitionList(),
+    // Agenda v2: también solo con Home Assistant (tools/agenda.ts).
+    ...listAgendaToolDefinitionList(),
   ];
 }
 

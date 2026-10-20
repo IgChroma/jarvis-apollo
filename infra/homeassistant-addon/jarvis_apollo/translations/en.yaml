@@ -37,6 +37,9 @@ configuration:
   speaker_url:
     name: External speaker URL
     description: The jarvis-speaker service (infra/speaker). Empty = off.
+  agenda_calendar:
+    name: Agenda calendar
+    description: Home Assistant calendar where Jarvis adds events by voice (default calendar.hogar).
   log_to_file:
     name: Keep logs in /share
     description: /share/jarvis-apollo/logs/apollo.log survives updates.

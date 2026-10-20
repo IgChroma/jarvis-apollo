@@ -151,8 +151,13 @@ private:
                 // dedo. El dedo tiene que quedarse quieto, o esto secuestraría
                 // un swipe lento. Sobre Enviar, una pestaña o un mosaico, un
                 // hold sigue siendo eso: solo el fondo y Hablar graban.
+                // Un evento de la agenda o un dia del calendario son "fondo"
+                // para el hold: mantener habla, tocar abre. Dentro de un
+                // overlay de agenda (detalle, vista de un dia) no se graba.
                 const bool target_allows_hold = press_target.kind == TargetKind::kNone ||
-                                                press_target.kind == TargetKind::kTalk;
+                                                press_target.kind == TargetKind::kTalk ||
+                                                press_target.kind == TargetKind::kAgendaRow ||
+                                                press_target.kind == TargetKind::kCalendarDay;
                 if (!is_hold_talking && target_allows_hold &&
                     now_ms - press_started_ms >= kHoldToTalkMs &&
                     abs(last_x - start_x) < kTapMaxTravelPx &&
@@ -256,23 +261,58 @@ private:
         if (!is_steady || dashboard == nullptr) {
             return;
         }
-        if (target.kind == TargetKind::kTab) {
-            const auto view = static_cast<JarvisDashboardDisplay::View>(target.index);
-            ESP_LOGI(kTag, "Tab %d", target.index);
-            app.RunDashboardTouch([dashboard, view]() { dashboard->ShowView(view); });
-            return;
-        }
-        // Mosaico de Casa: el estado se pinta en la tarea principal, justo
-        // antes de mandar la accion, para que pantalla y mensaje salgan del
-        // mismo mosaico aunque haya llegado un tablero nuevo en el medio.
-        ESP_LOGI(kTag, "Tile %d tap (kind %d)", target.index, (int)target.kind);
-        app.RunDashboardTouch([dashboard, target]() {
-            std::string entity_id;
-            const char* action = nullptr;
-            if (dashboard->ApplyTileAction(target, &entity_id, &action)) {
-                Application::GetInstance().SendHaAction(entity_id, action);
+        switch (target.kind) {
+            case TargetKind::kTab: {
+                const auto view = static_cast<JarvisDashboardDisplay::View>(target.index);
+                ESP_LOGI(kTag, "Tab %d", target.index);
+                app.RunDashboardTouch([dashboard, view]() { dashboard->ShowView(view); });
+                return;
             }
-        });
+            case TargetKind::kTileToggle:
+            case TargetKind::kClimateDown:
+            case TargetKind::kClimateUp:
+                // Mosaico de Casa: el estado se pinta en la tarea principal,
+                // justo antes de mandar la accion, para que pantalla y mensaje
+                // salgan del mismo mosaico aunque haya llegado un tablero nuevo
+                // en el medio.
+                ESP_LOGI(kTag, "Tile %d tap (kind %d)", target.index, (int)target.kind);
+                app.RunDashboardTouch([dashboard, target]() {
+                    std::string entity_id;
+                    const char* action = nullptr;
+                    if (dashboard->ApplyTileAction(target, &entity_id, &action)) {
+                        Application::GetInstance().SendHaAction(entity_id, action);
+                    }
+                });
+                return;
+            case TargetKind::kCalendarDay: {
+                // Abre la vista del dia en "Cargando..." y pide la agenda; si
+                // no contesta en 5 s la vista lo dice sola.
+                const int day = target.index;
+                ESP_LOGI(kTag, "Calendar day %d", day);
+                app.RunDashboardTouch([dashboard, day]() {
+                    std::string date;
+                    if (dashboard->OpenDayView(day, &date)) {
+                        Application::GetInstance().SendAgendaDayRequest(date);
+                    }
+                });
+                return;
+            }
+            case TargetKind::kAgendaRow:
+            case TargetKind::kDayRow:
+            case TargetKind::kModalClose:
+            case TargetKind::kDayCancel:
+            case TargetKind::kListSwitch:
+                ESP_LOGI(kTag, "Agenda target %d/%d", (int)target.kind, target.index);
+                app.RunDashboardTouch([dashboard, target]() { dashboard->ApplyAgendaTouch(target); });
+                return;
+            case TargetKind::kOverlayBlock:
+                // Sobre un overlay pero sobre nada: no hace nada, pero cuenta
+                // como actividad (despierta la pantalla si se habia dormido).
+                app.RunDashboardTouch([]() {});
+                return;
+            default:
+                return;
+        }
     }
 
     static void EmitGesture(const char* gesture) {

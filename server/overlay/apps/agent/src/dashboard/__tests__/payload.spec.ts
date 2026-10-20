@@ -45,9 +45,10 @@ describe('buildDashboardPayload', () => {
         { title: 'Reunión con Juan', startsAtMilliseconds: NOW + 40 * 60_000 },
       ],
     });
-    expect(payload.agendaList).toEqual([
+    // Agenda v2: a más de una hora, "hoy 14:00" (sin zona, la de Buenos Aires).
+    expect(payload.agendaList?.map(({ title, whenLabel }) => ({ title, whenLabel }))).toEqual([
       { title: 'Reunión con Juan', whenLabel: 'en 40 minutos' },
-      { title: 'Llamar al gasista', whenLabel: 'en 2 horas' },
+      { title: 'Llamar al gasista', whenLabel: 'hoy 14:00' },
     ]);
   });
 
@@ -59,16 +60,17 @@ describe('buildDashboardPayload', () => {
     expect(payload.agendaList).toEqual([]);
   });
 
-  it('la agenda no pasa de dos entradas', () => {
+  it('la agenda no pasa de seis entradas (Agenda v2)', () => {
     const payload = buildDashboardPayload({
       nowMilliseconds: NOW,
-      reminderList: [
-        { text: 'uno', dueAtMilliseconds: NOW + 60_000 },
-        { text: 'dos', dueAtMilliseconds: NOW + 120_000 },
-        { text: 'tres', dueAtMilliseconds: NOW + 180_000 },
-      ],
+      reminderList: ['uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete'].map((text, index) => ({
+        text,
+        dueAtMilliseconds: NOW + (index + 1) * 60_000,
+      })),
     });
-    expect((payload.agendaList ?? []).map((entry) => entry.title)).toEqual(['uno', 'dos']);
+    expect((payload.agendaList ?? []).map((entry) => entry.title)).toEqual([
+      'uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis',
+    ]);
   });
 
   it('recorta los pendientes a cuatro y les guarda el total real', () => {

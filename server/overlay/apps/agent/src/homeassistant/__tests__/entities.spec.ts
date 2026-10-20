@@ -218,8 +218,15 @@ describe('normalizeCalendarEventList', () => {
         startsAtMilliseconds: Date.UTC(2026, 9, 18, 3, 0),
         endsAtMilliseconds: Date.UTC(2026, 9, 19, 3, 0),
         isAllDay: true,
+        icon: 'otro',
+        fullTitle: 'Cumple Nico',
       },
-      { title: 'Dentista', startsAtMilliseconds: Date.UTC(2026, 9, 18, 21, 30) },
+      {
+        title: 'Dentista',
+        startsAtMilliseconds: Date.UTC(2026, 9, 18, 21, 30),
+        icon: 'otro',
+        fullTitle: 'Dentista',
+      },
     ]);
   });
 });

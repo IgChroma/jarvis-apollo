@@ -687,6 +687,18 @@ export class Apollo extends Agent<Env, ApolloState> {
         );
         break;
       }
+      case 'agenda_day_request': {
+        // Agenda v2: igual que ha_action, la agenda por día vive en el host de
+        // Bun (host/actor.ts). Acá solo queda la línea de log.
+        console.log(
+          JSON.stringify({
+            level: 'warn',
+            message: 'agenda_day_no_soportado_en_worker',
+            fecha: deviceMessage.date.slice(0, 40),
+          }),
+        );
+        break;
+      }
     }
   }
 
